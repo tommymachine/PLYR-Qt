@@ -21,6 +21,7 @@ find_package(Qt6 6.5 REQUIRED COMPONENTS
     Qml
     Quick
     QuickControls2
+    Multimedia
 )
 
 qt_standard_project_setup(REQUIRES 6.5)
@@ -59,6 +60,7 @@ target_link_libraries(plyr_qt PRIVATE
     Qt6::Qml
     Qt6::Quick
     Qt6::QuickControls2
+    Qt6::Multimedia
 )
 
 set_target_properties(plyr_qt PROPERTIES

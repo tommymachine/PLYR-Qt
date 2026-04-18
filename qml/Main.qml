@@ -3,6 +3,7 @@ import QtQuick.Window
 import QtQuick.Controls
 import QtQuick.Layouts
 import QtQuick.Dialogs
+import QtMultimedia
 
 ApplicationWindow {
     id: root
@@ -29,6 +30,22 @@ ApplicationWindow {
         title: "Choose a folder of FLAC files"
         onAccepted: playlist.openFolderUrl(selectedFolder)
     }
+
+    // --------------------------------------------------------------------
+    // Playback engine (temporary QtMultimedia wrapper — will be replaced
+    // with an ffmpeg + PortAudio gapless scheduler later).
+    // --------------------------------------------------------------------
+    MediaPlayer {
+        id: mediaPlayer
+        audioOutput: AudioOutput { id: audioOutput; volume: 1.0 }
+        source: playlist.currentUrl
+        onSourceChanged: if (source.toString() !== "") play()
+        onMediaStatusChanged: {
+            if (mediaStatus === MediaPlayer.EndOfMedia) playlist.next()
+        }
+    }
+    readonly property bool isPlaying:
+        mediaPlayer.playbackState === MediaPlayer.PlayingState
 
     function formatDuration(seconds) {
         if (!isFinite(seconds) || seconds < 0) return "0:00"
@@ -248,7 +265,7 @@ ApplicationWindow {
 
         Rectangle { Layout.fillWidth: true; Layout.preferredHeight: 1; color: root.subtleLine }
 
-        // ---- Transport (placeholder until we wire up audio) ----------
+        // ---- Transport ------------------------------------------------
         Rectangle {
             Layout.fillWidth: true
             Layout.preferredHeight: 96
@@ -259,45 +276,118 @@ ApplicationWindow {
                 anchors.margins: 12
                 spacing: 6
 
-                Rectangle {
+                // Seek bar (plain Slider for now — will be replaced with
+                // the custom tapered PLYRSeekSlider).
+                RowLayout {
                     Layout.fillWidth: true
-                    Layout.preferredHeight: 28
-                    color: Qt.rgba(1, 1, 1, 0.04)
-                    radius: 2
+                    spacing: 8
+
+                    Text {
+                        text: formatDuration(mediaPlayer.position / 1000.0)
+                        color: root.muted
+                        font.family: "Menlo"
+                        font.pixelSize: 10
+                        Layout.preferredWidth: 48
+                        horizontalAlignment: Text.AlignRight
+                    }
+
+                    Slider {
+                        Layout.fillWidth: true
+                        from: 0
+                        to:   Math.max(1, mediaPlayer.duration / 1000.0)
+                        value: mediaPlayer.position / 1000.0
+                        enabled: playlist.hasCurrent
+                        onPressedChanged: {
+                            if (!pressed)
+                                mediaPlayer.position = value * 1000
+                        }
+                    }
+
+                    Text {
+                        text: formatDuration(mediaPlayer.duration / 1000.0)
+                        color: root.muted
+                        font.family: "Menlo"
+                        font.pixelSize: 10
+                        Layout.preferredWidth: 48
+                    }
                 }
 
                 RowLayout {
                     Layout.fillWidth: true
                     spacing: 16
 
+                    // Now-playing card
                     Rectangle {
                         Layout.preferredWidth: 260
                         Layout.preferredHeight: 48
                         color: Qt.rgba(1, 1, 1, 0.06)
                         radius: 8
-                        Text {
-                            anchors.verticalCenter: parent.verticalCenter
-                            anchors.left: parent.left
-                            anchors.leftMargin: 10
-                            color: root.muted
-                            text: "nothing playing"
-                            font.pixelSize: 13
+
+                        ColumnLayout {
+                            anchors.fill: parent
+                            anchors.margins: 8
+                            spacing: 2
+
+                            Text {
+                                text: playlist.hasCurrent
+                                      ? playlist.currentTitle
+                                      : "nothing playing"
+                                color: playlist.hasCurrent ? root.primary : root.muted
+                                font.pixelSize: 13
+                                font.bold: playlist.hasCurrent
+                                elide: Text.ElideRight
+                                Layout.fillWidth: true
+                            }
+                            Text {
+                                text: playlist.currentArtist
+                                color: root.muted
+                                font.pixelSize: 10
+                                elide: Text.ElideRight
+                                Layout.fillWidth: true
+                                visible: text !== ""
+                            }
                         }
                     }
 
                     Item { Layout.fillWidth: true }
 
-                    Button { text: "⏮"; flat: true }
-                    Button { text: "▶"; flat: true; font.pixelSize: 20 }
-                    Button { text: "⏭"; flat: true }
+                    Button {
+                        text: "⏮"
+                        flat: true
+                        enabled: playlist.hasCurrent
+                        onClicked: playlist.previous()
+                    }
+                    Button {
+                        text: root.isPlaying ? "⏸" : "▶"
+                        flat: true
+                        font.pixelSize: 20
+                        enabled: playlist.hasCurrent
+                        onClicked: {
+                            if (root.isPlaying) mediaPlayer.pause()
+                            else mediaPlayer.play()
+                        }
+                    }
+                    Button {
+                        text: "⏭"
+                        flat: true
+                        enabled: playlist.hasCurrent
+                        onClicked: playlist.next()
+                    }
 
                     Item { Layout.fillWidth: true }
 
-                    Rectangle {
-                        Layout.preferredWidth: 100
-                        Layout.preferredHeight: 28
-                        color: Qt.rgba(1, 1, 1, 0.04)
-                        radius: 2
+                    RowLayout {
+                        Layout.preferredWidth: 140
+                        spacing: 4
+
+                        Text { text: "🔈"; color: root.muted; font.pixelSize: 11 }
+                        Slider {
+                            Layout.fillWidth: true
+                            from: 0; to: 1
+                            value: audioOutput.volume
+                            onMoved: audioOutput.volume = value
+                        }
+                        Text { text: "🔊"; color: root.muted; font.pixelSize: 11 }
                     }
                 }
             }

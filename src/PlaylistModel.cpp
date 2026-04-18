@@ -106,3 +106,15 @@ void PlaylistModel::openFolderUrl(const QUrl& url)
 {
     openFolder(url.toLocalFile());
 }
+
+void PlaylistModel::next()
+{
+    if (m_currentIndex >= 0 && m_currentIndex + 1 < int(m_tracks.size()))
+        setCurrentIndex(m_currentIndex + 1);
+}
+
+void PlaylistModel::previous()
+{
+    if (m_currentIndex > 0)
+        setCurrentIndex(m_currentIndex - 1);
+}
