@@ -18,6 +18,7 @@
 #include <vector>
 
 class QAudioBuffer;
+class QAudioFormat;
 
 class FftProcessor : public QObject {
     Q_OBJECT
@@ -33,10 +34,15 @@ public:
     // short lock, and returns.
     void pushBuffer(const QAudioBuffer& buf);
 
+    // Raw-PCM variant: called from PcmPipe as the sink pulls audio
+    // through. `bytes` must be a multiple of `fmt.bytesPerSample()` *
+    // `fmt.channelCount()`.
+    void pushPcm(const char* data, qint64 bytes, const QAudioFormat& fmt);
+
     // Return 16 smoothed band magnitudes (0..1) followed by 16 peak-hold
     // values (0..1) — 32 floats total. Call from the render thread.
     // Runs the FFT each call; designed to be cheap enough at 60 Hz.
-    QVariantList bandsAndPeaks();
+    Q_INVOKABLE QVariantList bandsAndPeaks();
 
     // Non-QVariant fast path for the render thread.
     //   `out` must have room for 2 * BAND_COUNT floats.

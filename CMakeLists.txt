@@ -58,6 +58,8 @@ qt_add_qml_module(plyr_qt
         src/PlaylistModel.h
         src/FftProcessor.cpp
         src/FftProcessor.h
+        src/PcmPipe.cpp
+        src/PcmPipe.h
         src/AudioEngine.cpp
         src/AudioEngine.h
 )

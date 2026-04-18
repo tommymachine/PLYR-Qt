@@ -11,6 +11,11 @@ import QtQuick
 Item {
     id: root
 
+    // `value` is bound externally (e.g. to audio.position / 1000). The
+    // slider never assigns to it — it emits `moved(newValue)` on release
+    // (or on every drag if commitOnDrag is true) and lets the consumer
+    // decide how to update the source. That keeps the external binding
+    // intact so playback progress keeps ticking in after a seek.
     property real value: 0
     property real from:  0
     property real to:    1
@@ -23,6 +28,15 @@ Item {
     signal moved(real newValue)
     signal editingStarted()
     signal editingEnded()
+
+    // Internal drag state — used to render the preview during scrub.
+    QtObject {
+        id: priv
+        property bool dragging:  false
+        property real dragValue: 0
+    }
+    readonly property real displayValue:
+        priv.dragging ? priv.dragValue : value
 
     // Colors — match the Metal shader / Canvas slider in Swift PLYR.
     readonly property color ocean:     Qt.rgba(0.02, 0.18, 0.45, 1.0)
@@ -41,9 +55,10 @@ Item {
 
         Connections {
             target: root
-            function onValueChanged() { canvas.requestPaint() }
-            function onFromChanged()  { canvas.requestPaint() }
-            function onToChanged()    { canvas.requestPaint() }
+            function onValueChanged()        { canvas.requestPaint() }
+            function onDisplayValueChanged() { canvas.requestPaint() }
+            function onFromChanged()         { canvas.requestPaint() }
+            function onToChanged()           { canvas.requestPaint() }
         }
         onWidthChanged:  requestPaint()
         onHeightChanged: requestPaint()
@@ -56,7 +71,7 @@ Item {
             ctx.clearRect(0, 0, W, H)
 
             const span = root.to - root.from
-            const t    = span > 0 ? Math.max(0, Math.min(1, (root.value - root.from) / span)) : 0
+            const t    = span > 0 ? Math.max(0, Math.min(1, (root.displayValue - root.from) / span)) : 0
             const splitX = t * W
 
             const baseSize = H * 0.55
@@ -135,7 +150,6 @@ Item {
     MouseArea {
         id: ma
         anchors.fill: parent
-        property bool dragging: false
 
         function valueFor(x) {
             const clamped = Math.max(0, Math.min(root.width, x))
@@ -144,25 +158,20 @@ Item {
         }
 
         onPressed: (mouse) => {
-            dragging = true
+            priv.dragging  = true
+            priv.dragValue = valueFor(mouse.x)
             root.editingStarted()
-            const v = valueFor(mouse.x)
-            if (root.commitOnDrag) {
-                root.value = v
-                root.moved(v)
-            } else {
-                root.value = v   // visual preview only
-            }
+            if (root.commitOnDrag) root.moved(priv.dragValue)
         }
         onPositionChanged: (mouse) => {
-            if (!dragging) return
-            const v = valueFor(mouse.x)
-            root.value = v
-            if (root.commitOnDrag) root.moved(v)
+            if (!priv.dragging) return
+            priv.dragValue = valueFor(mouse.x)
+            if (root.commitOnDrag) root.moved(priv.dragValue)
         }
         onReleased: {
-            dragging = false
-            if (!root.commitOnDrag) root.moved(root.value)
+            const finalV = priv.dragValue
+            priv.dragging = false
+            if (!root.commitOnDrag) root.moved(finalV)
             root.editingEnded()
         }
     }

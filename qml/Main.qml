@@ -505,10 +505,7 @@ ApplicationWindow {
                     spacing: 8
 
                     Text {
-                        text: formatDuration(
-                                  seekSlider.editing
-                                  ? seekSlider.value
-                                  : audio.position / 1000.0)
+                        text: formatDuration(seekSlider.displayValue)
                         color: root.muted
                         font.family: "Menlo"
                         font.pixelSize: 10
@@ -521,16 +518,14 @@ ApplicationWindow {
                         Layout.fillWidth: true
                         Layout.preferredHeight: 28
                         enabled: playlist.hasCurrent
-                        property bool editing: false
                         from: 0
                         to:   Math.max(1, audio.duration / 1000.0)
-                        value: editing
-                               ? value    // preserve preview
-                               : audio.position / 1000.0
-                        onEditingStarted: editing = true
-                        onEditingEnded:   editing = false
+                        // `value` stays bound to live playback progress.
+                        // Drag state is tracked inside the slider and
+                        // exposed via `displayValue` for preview rendering.
+                        value: audio.position / 1000.0
                         onMoved: (newValue) => {
-                            audio.position = newValue * 1000
+                            audio.seek(newValue * 1000)
                         }
                     }
 

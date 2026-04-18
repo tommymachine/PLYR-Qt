@@ -5,6 +5,8 @@ extern "C" {
 }
 
 #include <QAudioBuffer>
+#include <QAudioFormat>
+#include <QDebug>
 #include <QMutexLocker>
 #include <QtMath>
 #include <algorithm>
@@ -50,6 +52,7 @@ void FftProcessor::pushBuffer(const QAudioBuffer& buf)
     const int  channels = fmt.channelCount();
     if (frames <= 0 || channels <= 0) return;
 
+
     // Fold each frame to mono, append to the ring buffer under lock.
     QMutexLocker lk(&m_ringMutex);
     const int cap = int(m_ring.size());
@@ -81,6 +84,63 @@ void FftProcessor::pushBuffer(const QAudioBuffer& buf)
         }
         case QAudioFormat::Int32: {
             const auto* src = buf.constData<qint32>();
+            constexpr float inv = 1.0f / 2147483648.0f;
+            for (int i = 0; i < frames; ++i) {
+                float s = 0.0f;
+                for (int c = 0; c < channels; ++c)
+                    s += float(src[i * channels + c]) * inv;
+                m_ring[w] = s / float(channels);
+                if (++w == cap) w = 0;
+            }
+            break;
+        }
+        default:
+            break;
+    }
+    m_writeIndex = w;
+}
+
+
+void FftProcessor::pushPcm(const char* data, qint64 bytes, const QAudioFormat& fmt)
+{
+    if (!data || bytes <= 0) return;
+    const int channels      = fmt.channelCount();
+    const int bytesPerSample = fmt.bytesPerSample();
+    if (channels <= 0 || bytesPerSample <= 0) return;
+
+    const int frames = int(bytes / (qint64(channels) * bytesPerSample));
+    if (frames <= 0) return;
+
+    QMutexLocker lk(&m_ringMutex);
+    const int cap = int(m_ring.size());
+    int w = m_writeIndex;
+
+    switch (fmt.sampleFormat()) {
+        case QAudioFormat::Float: {
+            const auto* src = reinterpret_cast<const float*>(data);
+            for (int i = 0; i < frames; ++i) {
+                float s = 0.0f;
+                for (int c = 0; c < channels; ++c)
+                    s += src[i * channels + c];
+                m_ring[w] = s / float(channels);
+                if (++w == cap) w = 0;
+            }
+            break;
+        }
+        case QAudioFormat::Int16: {
+            const auto* src = reinterpret_cast<const qint16*>(data);
+            constexpr float inv = 1.0f / 32768.0f;
+            for (int i = 0; i < frames; ++i) {
+                float s = 0.0f;
+                for (int c = 0; c < channels; ++c)
+                    s += float(src[i * channels + c]) * inv;
+                m_ring[w] = s / float(channels);
+                if (++w == cap) w = 0;
+            }
+            break;
+        }
+        case QAudioFormat::Int32: {
+            const auto* src = reinterpret_cast<const qint32*>(data);
             constexpr float inv = 1.0f / 2147483648.0f;
             for (int i = 0; i < frames; ++i) {
                 float s = 0.0f;
