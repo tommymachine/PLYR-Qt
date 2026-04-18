@@ -2,6 +2,7 @@ import QtQuick
 import QtQuick.Window
 import QtQuick.Controls
 import QtQuick.Layouts
+import QtQuick.Dialogs
 
 ApplicationWindow {
     id: root
@@ -13,18 +14,34 @@ ApplicationWindow {
     title: "PLYR Qt"
     color: "black"
 
-    // PLYR palette (matches the Swift project for visual continuity)
-    readonly property color bg:        "black"
-    readonly property color ocean:     Qt.rgba(0.02, 0.18, 0.45, 1.0)
-    readonly property color sky:       Qt.rgba(0.45, 0.78, 1.00, 1.0)
-    readonly property color muted:     Qt.rgba(1.0, 1.0, 1.0, 0.40)
-    readonly property color veryMuted: Qt.rgba(1.0, 1.0, 1.0, 0.25)
+    // PLYR palette (mirrors the Swift version).
+    readonly property color bg:          "black"
+    readonly property color ocean:       Qt.rgba(0.02, 0.18, 0.45, 1.0)
+    readonly property color sky:         Qt.rgba(0.45, 0.78, 1.00, 1.0)
+    readonly property color accent:      Qt.rgba(0.55, 0.82, 1.00, 1.0)
+    readonly property color primary:     "white"
+    readonly property color muted:       Qt.rgba(1.0, 1.0, 1.0, 0.40)
+    readonly property color veryMuted:   Qt.rgba(1.0, 1.0, 1.0, 0.25)
+    readonly property color subtleLine:  Qt.rgba(1.0, 1.0, 1.0, 0.10)
+
+    FolderDialog {
+        id: folderDialog
+        title: "Choose a folder of FLAC files"
+        onAccepted: playlist.openFolderUrl(selectedFolder)
+    }
+
+    function formatDuration(seconds) {
+        if (!isFinite(seconds) || seconds < 0) return "0:00"
+        const m = Math.floor(seconds / 60)
+        const s = Math.floor(seconds) % 60
+        return m + ":" + (s < 10 ? "0" + s : s)
+    }
 
     ColumnLayout {
         anchors.fill: parent
         spacing: 0
 
-        // ---- Header ---------------------------------------------------
+        // ---- Header --------------------------------------------------
         Rectangle {
             Layout.fillWidth: true
             Layout.preferredHeight: 42
@@ -38,7 +55,7 @@ ApplicationWindow {
 
                 Text {
                     text: "PLYR"
-                    color: "white"
+                    color: root.primary
                     font.family: "Menlo"
                     font.bold: true
                     font.pixelSize: 18
@@ -46,48 +63,181 @@ ApplicationWindow {
 
                 Button {
                     text: "Open Folder…"
-                    // TODO: hook up a native file dialog
+                    onClicked: folderDialog.open()
                 }
 
-                Item { Layout.fillWidth: true }  // spacer
+                Text {
+                    visible: playlist.isScanning
+                    text: "Scanning…"
+                    color: root.muted
+                    font.pixelSize: 11
+                }
 
                 Text {
-                    text: "0 tracks"
+                    visible: !playlist.isScanning && playlist.folderPath !== ""
+                    text: playlist.folderPath
+                    color: root.muted
+                    font.pixelSize: 11
+                    elide: Text.ElideMiddle
+                    Layout.fillWidth: true
+                }
+
+                Item { Layout.fillWidth: true }
+
+                Text {
+                    text: playlist.count + " tracks"
                     color: root.muted
                     font.pixelSize: 11
                 }
             }
         }
 
-        Rectangle {
-            Layout.fillWidth: true
-            Layout.preferredHeight: 1
-            color: Qt.rgba(1, 1, 1, 0.1)
-        }
+        Rectangle { Layout.fillWidth: true; Layout.preferredHeight: 1; color: root.subtleLine }
 
-        // ---- Split: playlist left, visualizer-placeholder right -------
+        // ---- Split: playlist left, visualizer placeholder right -----
         SplitView {
             Layout.fillWidth: true
             Layout.fillHeight: true
 
-            // Left: playlist placeholder
             Rectangle {
                 SplitView.preferredWidth: 420
                 SplitView.minimumWidth: 320
                 color: root.bg
 
-                Text {
-                    anchors.centerIn: parent
-                    color: root.muted
-                    text: "playlist goes here"
+                ListView {
+                    id: listView
+                    anchors.fill: parent
+                    clip: true
+                    model: playlist
+                    spacing: 0
+
+                    // Disc-based section headers.
+                    section.property: "discFolder"
+                    section.criteria: ViewSection.FullString
+                    section.delegate: Rectangle {
+                        width: ListView.view.width
+                        height: 28
+                        color: root.bg
+                        Text {
+                            anchors.verticalCenter: parent.verticalCenter
+                            anchors.left: parent.left
+                            anchors.leftMargin: 14
+                            color: Qt.rgba(1, 1, 1, 0.55)
+                            font.pixelSize: 11
+                            font.bold: true
+                            text: {
+                                const m = /^CD(\d+)_(.*)$/.exec(section)
+                                return m
+                                    ? "Disc " + parseInt(m[1]) + " · " + m[2].replace(/_/g, " ")
+                                    : section.replace(/_/g, " ")
+                            }
+                        }
+                    }
+
+                    delegate: Rectangle {
+                        id: row
+                        width: ListView.view.width
+                        height: 48
+                        readonly property bool current: (index === playlist.currentIndex)
+                        color: current ? Qt.rgba(0.05, 0.10, 0.20, 1.0) : root.bg
+
+                        MouseArea {
+                            anchors.fill: parent
+                            onDoubleClicked: playlist.currentIndex = index
+                        }
+
+                        RowLayout {
+                            anchors.fill: parent
+                            anchors.leftMargin: 10
+                            anchors.rightMargin: 12
+                            anchors.topMargin: 4
+                            anchors.bottomMargin: 4
+                            spacing: 10
+
+                            Item {
+                                Layout.preferredWidth: 24
+                                Layout.fillHeight: true
+                                Text {
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    anchors.horizontalCenter: parent.horizontalCenter
+                                    text: row.current
+                                          ? "▶"
+                                          : String(trackNumber).padStart(2, "0")
+                                    color: row.current ? root.accent
+                                                       : Qt.rgba(1, 1, 1, 0.28)
+                                    font.pixelSize: row.current ? 11 : 10
+                                    font.family: "Menlo"
+                                }
+                            }
+
+                            ColumnLayout {
+                                Layout.fillWidth: true
+                                spacing: 2
+
+                                RowLayout {
+                                    Layout.fillWidth: true
+                                    spacing: 8
+
+                                    Text {
+                                        Layout.fillWidth: true
+                                        text: title
+                                        color: row.current
+                                               ? root.primary
+                                               : Qt.rgba(1, 1, 1, 0.40)
+                                        font.pixelSize: 13
+                                        font.bold: row.current
+                                        elide: Text.ElideRight
+                                    }
+
+                                    Text {
+                                        text: formatDuration(duration)
+                                        color: row.current
+                                               ? Qt.rgba(1, 1, 1, 0.65)
+                                               : Qt.rgba(1, 1, 1, 0.25)
+                                        font.pixelSize: 10
+                                        font.family: "Menlo"
+                                    }
+                                }
+
+                                RowLayout {
+                                    Layout.fillWidth: true
+                                    spacing: 8
+
+                                    Text {
+                                        Layout.fillWidth: true
+                                        text: artist
+                                        color: row.current
+                                               ? Qt.rgba(root.accent.r,
+                                                          root.accent.g,
+                                                          root.accent.b, 0.85)
+                                               : Qt.rgba(1, 1, 1, 0.25)
+                                        font.pixelSize: 10
+                                        elide: Text.ElideRight
+                                    }
+
+                                    Text {
+                                        visible: composer !== ""
+                                        text: composer
+                                        color: row.current
+                                               ? Qt.rgba(root.accent.r,
+                                                          root.accent.g,
+                                                          root.accent.b, 0.85)
+                                               : Qt.rgba(1, 1, 1, 0.25)
+                                        font.pixelSize: 10
+                                        elide: Text.ElideRight
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    ScrollBar.vertical: ScrollBar { }
                 }
             }
 
-            // Right: visualizer placeholder
             Rectangle {
                 SplitView.minimumWidth: 280
                 color: root.bg
-
                 Text {
                     anchors.centerIn: parent
                     color: root.muted
@@ -96,13 +246,9 @@ ApplicationWindow {
             }
         }
 
-        Rectangle {
-            Layout.fillWidth: true
-            Layout.preferredHeight: 1
-            color: Qt.rgba(1, 1, 1, 0.1)
-        }
+        Rectangle { Layout.fillWidth: true; Layout.preferredHeight: 1; color: root.subtleLine }
 
-        // ---- Transport (slider + controls) ----------------------------
+        // ---- Transport (placeholder until we wire up audio) ----------
         Rectangle {
             Layout.fillWidth: true
             Layout.preferredHeight: 96
@@ -113,7 +259,6 @@ ApplicationWindow {
                 anchors.margins: 12
                 spacing: 6
 
-                // Seek slider placeholder
                 Rectangle {
                     Layout.fillWidth: true
                     Layout.preferredHeight: 28
@@ -125,13 +270,11 @@ ApplicationWindow {
                     Layout.fillWidth: true
                     spacing: 16
 
-                    // Now-playing card placeholder
                     Rectangle {
                         Layout.preferredWidth: 260
                         Layout.preferredHeight: 48
                         color: Qt.rgba(1, 1, 1, 0.06)
                         radius: 8
-
                         Text {
                             anchors.verticalCenter: parent.verticalCenter
                             anchors.left: parent.left
@@ -150,7 +293,6 @@ ApplicationWindow {
 
                     Item { Layout.fillWidth: true }
 
-                    // Volume placeholder
                     Rectangle {
                         Layout.preferredWidth: 100
                         Layout.preferredHeight: 28

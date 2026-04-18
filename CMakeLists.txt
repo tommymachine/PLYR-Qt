@@ -27,8 +27,21 @@ qt_standard_project_setup(REQUIRES 6.5)
 
 qt_add_executable(plyr_qt
     src/main.cpp
-    src/FlacTags.cpp
-    src/FlacTags.h
+)
+
+target_include_directories(plyr_qt PRIVATE src)
+
+qt_add_qml_module(plyr_qt
+    URI         PLYR
+    VERSION     1.0
+    QML_FILES
+        qml/Main.qml
+    SOURCES
+        src/FlacTags.cpp
+        src/FlacTags.h
+        src/Track.h
+        src/PlaylistModel.cpp
+        src/PlaylistModel.h
 )
 
 # Standalone CLI for testing the FLAC parser in isolation.
@@ -39,13 +52,6 @@ qt_add_executable(flactest
 )
 target_link_libraries(flactest PRIVATE Qt6::Core)
 set_target_properties(flactest PROPERTIES MACOSX_BUNDLE FALSE)
-
-qt_add_qml_module(plyr_qt
-    URI         PLYR
-    VERSION     1.0
-    QML_FILES
-        qml/Main.qml
-)
 
 target_link_libraries(plyr_qt PRIVATE
     Qt6::Core
