@@ -1,0 +1,44 @@
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Build output
+build/
+build-*/
+cmake-build-*/
+*.o
+*.obj
+*.dSYM/
+*.app/
+*.pdb
+*.exe
+
+# CMake cache
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+CMakeScripts/
+Makefile
+compile_commands.json
+
+# Qt Creator
+*.user
+*.user.*
+*.autosave
+*.qbs.user
+*.qbs.user.*
+*.pro.user
+*.pro.user.*
+
+# Shader compilation intermediates (keep .qsb sources in repo if hand-authored)
+*.spv
+
+# IDEs
+.vscode/
+.idea/
+.vs/
+
+# Env
+.env
+*.log
