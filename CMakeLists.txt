@@ -58,6 +58,8 @@ qt_add_qml_module(plyr_qt
         src/PlaylistModel.h
         src/FftProcessor.cpp
         src/FftProcessor.h
+        src/AudioEngine.cpp
+        src/AudioEngine.h
 )
 
 # Standalone CLI for testing the FLAC parser in isolation.

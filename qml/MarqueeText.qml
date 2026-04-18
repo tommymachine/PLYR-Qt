@@ -52,20 +52,22 @@ Item {
 
     // One-shot + repeating animation:
     //   pause → scroll to -(textWidth + gap) → snap to 0 → repeat
-    SequentialAnimation on row.x {
+    SequentialAnimation {
         id: anim
         running: root.needsScroll && root.visible
         loops: Animation.Infinite
 
         PauseAnimation { duration: root.initialPause }
         NumberAnimation {
+            target: row
+            property: "x"
             from: 0
             to:   -(root.textWidth + root.gap)
             duration: Math.max(1,
                         1000 * (root.textWidth + root.gap) / root.speed)
             easing.type: Easing.Linear
         }
-        PropertyAction  { value: 0 }
+        PropertyAction  { target: row; property: "x"; value: 0 }
     }
 
     onTextChanged: anim.restart()

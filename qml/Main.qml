@@ -3,7 +3,6 @@ import QtQuick.Window
 import QtQuick.Controls
 import QtQuick.Layouts
 import QtQuick.Dialogs
-import QtMultimedia
 
 ApplicationWindow {
     id: root
@@ -31,27 +30,10 @@ ApplicationWindow {
         onAccepted: playlist.openFolderUrl(selectedFolder)
     }
 
-    // --------------------------------------------------------------------
-    // Playback engine (temporary QtMultimedia wrapper — will be replaced
-    // with an ffmpeg + PortAudio gapless scheduler later).
-    // --------------------------------------------------------------------
-    MediaPlayer {
-        id: mediaPlayer
-        audioOutput: AudioOutput { id: audioOutput; volume: 1.0 }
-        // QAudioBufferOutput (Qt 6.7+) taps the rendered audio alongside
-        // normal playback, so we can feed the FFT visualizer without
-        // replacing the playback engine.
-        audioBufferOutput: AudioBufferOutput {
-            onAudioBufferReceived: (buffer) => fft.pushBuffer(buffer)
-        }
-        source: playlist.currentUrl
-        onSourceChanged: if (source.toString() !== "") play()
-        onMediaStatusChanged: {
-            if (mediaStatus === MediaPlayer.EndOfMedia) playlist.next()
-        }
-    }
-    readonly property bool isPlaying:
-        mediaPlayer.playbackState === MediaPlayer.PlayingState
+    // Playback: `audio` is a C++ AudioEngine instance (main.cpp ctx-prop).
+    // It wraps QMediaPlayer + QAudioBufferOutput so the FFT visualizer
+    // gets PCM samples while normal playback runs through QAudioOutput.
+    readonly property bool isPlaying: audio.playing
 
     // Drives the metadata panel (opened via chevron, dismissed by click-out).
     property bool metadataExpanded: false
@@ -77,18 +59,20 @@ ApplicationWindow {
     // Metadata overlay: sits directly above the now-playing card,
     // same width, extending upward. Taller because it includes the
     // metadata rows. Fades in instantly when metadataExpanded = true.
+    // Positioned by absolute x/y because `transport` lives inside the
+    // ColumnLayout and can't be anchor-targeted from this outer Item.
     // ------------------------------------------------------------------
     Rectangle {
         id: metadataOverlay
         z: 200
         visible: root.metadataExpanded && playlist.hasCurrent
-        // Mirror the card's position by anchoring to the transport.
-        anchors.left:   transport.left
-        anchors.leftMargin: 12
-        anchors.bottom: transport.bottom
-        anchors.bottomMargin: 12
         width: 260
         height: 260 + 48   // metadata rows + card-sized bottom strip
+        // bottom-left corner of the overlay matches the now-playing card:
+        //   x = transport-row left + padding
+        //   y = window bottom - transport height + padding
+        x: 12
+        y: root.height - transport.height + 12 - height + 48
         color: Qt.rgba(0.08, 0.08, 0.10, 0.92)
         radius: 10
         border.color: Qt.rgba(1, 1, 1, 0.10)
@@ -524,7 +508,7 @@ ApplicationWindow {
                         text: formatDuration(
                                   seekSlider.editing
                                   ? seekSlider.value
-                                  : mediaPlayer.position / 1000.0)
+                                  : audio.position / 1000.0)
                         color: root.muted
                         font.family: "Menlo"
                         font.pixelSize: 10
@@ -539,19 +523,19 @@ ApplicationWindow {
                         enabled: playlist.hasCurrent
                         property bool editing: false
                         from: 0
-                        to:   Math.max(1, mediaPlayer.duration / 1000.0)
+                        to:   Math.max(1, audio.duration / 1000.0)
                         value: editing
                                ? value    // preserve preview
-                               : mediaPlayer.position / 1000.0
+                               : audio.position / 1000.0
                         onEditingStarted: editing = true
                         onEditingEnded:   editing = false
                         onMoved: (newValue) => {
-                            mediaPlayer.position = newValue * 1000
+                            audio.position = newValue * 1000
                         }
                     }
 
                     Text {
-                        text: formatDuration(mediaPlayer.duration / 1000.0)
+                        text: formatDuration(audio.duration / 1000.0)
                         color: root.muted
                         font.family: "Menlo"
                         font.pixelSize: 10
@@ -642,8 +626,8 @@ ApplicationWindow {
                         font.pixelSize: 20
                         enabled: playlist.hasCurrent
                         onClicked: {
-                            if (root.isPlaying) mediaPlayer.pause()
-                            else mediaPlayer.play()
+                            if (root.isPlaying) audio.pause()
+                            else audio.play()
                         }
                     }
                     Button {
@@ -665,8 +649,8 @@ ApplicationWindow {
                             Layout.preferredHeight: 24
                             from: 0; to: 1
                             commitOnDrag: true
-                            value: audioOutput.volume
-                            onMoved: (v) => audioOutput.volume = v
+                            value: audio.volume
+                            onMoved: (v) => audio.volume = v
                         }
                         Text { text: "🔊"; color: root.muted; font.pixelSize: 11 }
                     }
