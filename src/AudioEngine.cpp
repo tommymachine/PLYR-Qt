@@ -79,7 +79,8 @@ void AudioEngine::setSource(const QUrl& u)
     m_pipe.clearAll();
     m_decoderDone = false;
     m_sinkStarted = false;
-    m_durationMs = 0;
+    m_durationMs  = 0;
+    m_baseUSec    = 0;
     emit durationChanged();
     emit positionChanged();
 
@@ -123,6 +124,7 @@ void AudioEngine::stop()
     m_pipe.clearAll();
     m_sinkStarted = false;
     m_decoderDone = false;
+    m_baseUSec    = 0;
     if (m_playing) { m_playing = false; emit playingChanged(); m_positionTimer.stop(); }
     emit positionChanged();
 }
@@ -139,8 +141,12 @@ qint64 AudioEngine::bytesPerMs() const
 
 qint64 AudioEngine::position() const
 {
-    const qint64 bpm = bytesPerMs();
-    return bpm > 0 ? (m_pipe.readPos() / bpm) : 0;
+    // processedUSecs is time-of-audio-actually-rendered since start();
+    // add the file-time this start() began at for the absolute position.
+    const qint64 rendered = m_sinkStarted && m_sink
+                          ? m_sink->processedUSecs()
+                          : 0;
+    return (m_baseUSec + rendered) / 1000;
 }
 
 
@@ -162,15 +168,18 @@ void AudioEngine::seek(qint64 ms)
 
     // Reposition atomically: stop the sink so it's not mid-read, seek
     // the pipe, start the sink again. Preserves playing/paused state.
+    // Update m_baseUSec to the new file-time; processedUSecs will reset
+    // to 0 on the next start(), and position() adds base + rendered.
     const bool wasPlaying = m_playing;
     if (m_sink) m_sink->stop();
     m_sinkStarted = false;
+    m_baseUSec    = ms * 1000;
+
     m_pipe.seekToPos(byteOffset);
 
-    if (wasPlaying || m_sinkStarted == false) {
-        startSinkIfNeeded();
-        if (!wasPlaying && m_sink) m_sink->suspend();
-    }
+    startSinkIfNeeded();
+    if (!wasPlaying && m_sink) m_sink->suspend();
+
     emit positionChanged();
 }
 

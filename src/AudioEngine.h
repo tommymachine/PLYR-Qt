@@ -84,4 +84,10 @@ private:
     PcmPipe                      m_pipe;
     FftProcessor*                m_fft = nullptr;
     QTimer                       m_positionTimer;
+
+    // Position tracking. `processedUSecs()` is cumulative time rendered
+    // since the most recent sink.start(); it resets on stop(). `m_baseUSec`
+    // is the file-time at which the current start() began, so the real
+    // position is m_baseUSec + processedUSecs (μs).
+    qint64                       m_baseUSec = 0;
 };
