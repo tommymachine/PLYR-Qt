@@ -35,6 +35,12 @@ AudioEngine::AudioEngine(QObject* parent)
             this, &AudioEngine::onDecoderFinished);
     connect(&m_decoder, &QAudioDecoder::durationChanged,
             this, [this](qint64 ms) {
+                // QAudioDecoder fires one durationChanged with the real
+                // length early on, then a second one with -1 when decode
+                // finishes (its "no longer decoding" sentinel). Ignore
+                // non-positive values so the real duration sticks — QML
+                // binds slider `to:` against this.
+                if (ms <= 0) return;
                 m_durationMs = ms;
                 emit durationChanged();
             });
