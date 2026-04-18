@@ -47,11 +47,151 @@ ApplicationWindow {
     readonly property bool isPlaying:
         mediaPlayer.playbackState === MediaPlayer.PlayingState
 
+    // Drives the metadata panel (opened via chevron, dismissed by click-out).
+    property bool metadataExpanded: false
+
     function formatDuration(seconds) {
         if (!isFinite(seconds) || seconds < 0) return "0:00"
         const m = Math.floor(seconds / 60)
         const s = Math.floor(seconds) % 60
         return m + ":" + (s < 10 ? "0" + s : s)
+    }
+
+    // Full-window tap-catcher: any click while the overlay is open
+    // dismisses. Sits below the overlay in z-order so clicks that land
+    // on the overlay itself are handled by its own MouseArea first.
+    MouseArea {
+        z: 150
+        anchors.fill: parent
+        visible: root.metadataExpanded
+        onClicked: root.metadataExpanded = false
+    }
+
+    // ------------------------------------------------------------------
+    // Metadata overlay: sits directly above the now-playing card,
+    // same width, extending upward. Taller because it includes the
+    // metadata rows. Fades in instantly when metadataExpanded = true.
+    // ------------------------------------------------------------------
+    Rectangle {
+        id: metadataOverlay
+        z: 200
+        visible: root.metadataExpanded && playlist.hasCurrent
+        // Mirror the card's position by anchoring to the transport.
+        anchors.left:   transport.left
+        anchors.leftMargin: 12
+        anchors.bottom: transport.bottom
+        anchors.bottomMargin: 12
+        width: 260
+        height: 260 + 48   // metadata rows + card-sized bottom strip
+        color: Qt.rgba(0.08, 0.08, 0.10, 0.92)
+        radius: 10
+        border.color: Qt.rgba(1, 1, 1, 0.10)
+        border.width: 1
+
+        // Soak up clicks that land on the overlay itself — user wants
+        // "any click dismisses", including on the overlay.
+        MouseArea {
+            anchors.fill: parent
+            onClicked: root.metadataExpanded = false
+        }
+
+        ColumnLayout {
+            anchors.fill: parent
+            spacing: 0
+
+            // Metadata rows
+            ColumnLayout {
+                Layout.fillWidth: true
+                Layout.fillHeight: true
+                Layout.margins: 14
+                spacing: 6
+
+                Repeater {
+                    model: [
+                        { k: "ALBUM",      v: playlist.currentAlbum },
+                        { k: "DISC",       v: String(playlist.currentDiscNumber) },
+                        { k: "TRACK",      v: String(playlist.currentTrackNumber) },
+                        { k: "COMPOSER",   v: playlist.currentComposer },
+                        { k: "RECORDED",   v: playlist.currentRecordingDateDisplay },
+                        { k: "RELEASED",   v: playlist.currentYear },
+                        { k: "GENRE",      v: playlist.currentGenre }
+                    ]
+
+                    delegate: RowLayout {
+                        Layout.fillWidth: true
+                        visible: modelData.v !== ""
+                        spacing: 8
+
+                        Text {
+                            text: modelData.k
+                            color: Qt.rgba(1, 1, 1, 0.45)
+                            font.family: "Menlo"
+                            font.pixelSize: 9
+                            font.bold: true
+                            Layout.preferredWidth: 70
+                        }
+                        Text {
+                            Layout.fillWidth: true
+                            text: modelData.v
+                            color: "white"
+                            font.pixelSize: 11
+                            wrapMode: Text.WordWrap
+                        }
+                    }
+                }
+                Item { Layout.fillHeight: true }  // soft bottom fill
+            }
+
+            // Faux-card bottom strip that visually merges with the real
+            // now-playing card once the overlay is dismissed.
+            Rectangle {
+                Layout.fillWidth: true
+                Layout.preferredHeight: 48
+                color: Qt.rgba(1, 1, 1, 0.06)
+                radius: 8
+
+                RowLayout {
+                    anchors.fill: parent
+                    anchors.leftMargin: 10
+                    anchors.rightMargin: 6
+                    spacing: 6
+
+                    ColumnLayout {
+                        Layout.fillWidth: true
+                        spacing: 2
+
+                        Text {
+                            Layout.fillWidth: true
+                            text: playlist.currentTitle
+                            color: root.primary
+                            font.pixelSize: 13
+                            font.bold: true
+                            elide: Text.ElideRight
+                        }
+                        Text {
+                            Layout.fillWidth: true
+                            text: playlist.currentArtist
+                            color: root.muted
+                            font.pixelSize: 10
+                            elide: Text.ElideRight
+                        }
+                    }
+
+                    Rectangle {
+                        Layout.preferredWidth: 20
+                        Layout.preferredHeight: 20
+                        color: "transparent"
+                        Text {
+                            anchors.centerIn: parent
+                            text: "⌄"
+                            color: root.muted
+                            font.pixelSize: 13
+                            rotation: 180      // flipped = collapse
+                        }
+                    }
+                }
+            }
+        }
     }
 
     ColumnLayout {
@@ -267,6 +407,7 @@ ApplicationWindow {
 
         // ---- Transport ------------------------------------------------
         Rectangle {
+            id: transport
             Layout.fillWidth: true
             Layout.preferredHeight: 96
             color: root.bg
@@ -276,14 +417,16 @@ ApplicationWindow {
                 anchors.margins: 12
                 spacing: 6
 
-                // Seek bar (plain Slider for now — will be replaced with
-                // the custom tapered PLYRSeekSlider).
+                // Seek bar — custom tapered slider.
                 RowLayout {
                     Layout.fillWidth: true
                     spacing: 8
 
                     Text {
-                        text: formatDuration(mediaPlayer.position / 1000.0)
+                        text: formatDuration(
+                                  seekSlider.editing
+                                  ? seekSlider.value
+                                  : mediaPlayer.position / 1000.0)
                         color: root.muted
                         font.family: "Menlo"
                         font.pixelSize: 10
@@ -291,15 +434,21 @@ ApplicationWindow {
                         horizontalAlignment: Text.AlignRight
                     }
 
-                    Slider {
+                    PLYRSeekSlider {
+                        id: seekSlider
                         Layout.fillWidth: true
+                        Layout.preferredHeight: 28
+                        enabled: playlist.hasCurrent
+                        property bool editing: false
                         from: 0
                         to:   Math.max(1, mediaPlayer.duration / 1000.0)
-                        value: mediaPlayer.position / 1000.0
-                        enabled: playlist.hasCurrent
-                        onPressedChanged: {
-                            if (!pressed)
-                                mediaPlayer.position = value * 1000
+                        value: editing
+                               ? value    // preserve preview
+                               : mediaPlayer.position / 1000.0
+                        onEditingStarted: editing = true
+                        onEditingEnded:   editing = false
+                        onMoved: (newValue) => {
+                            mediaPlayer.position = newValue * 1000
                         }
                     }
 
@@ -316,35 +465,67 @@ ApplicationWindow {
                     Layout.fillWidth: true
                     spacing: 16
 
-                    // Now-playing card
+                    // Now-playing card — marquee title + artist + chevron toggle.
                     Rectangle {
+                        id: nowCard
                         Layout.preferredWidth: 260
                         Layout.preferredHeight: 48
                         color: Qt.rgba(1, 1, 1, 0.06)
                         radius: 8
 
-                        ColumnLayout {
+                        RowLayout {
                             anchors.fill: parent
-                            anchors.margins: 8
-                            spacing: 2
+                            anchors.leftMargin: 10
+                            anchors.rightMargin: 6
+                            spacing: 6
 
-                            Text {
-                                text: playlist.hasCurrent
-                                      ? playlist.currentTitle
-                                      : "nothing playing"
-                                color: playlist.hasCurrent ? root.primary : root.muted
-                                font.pixelSize: 13
-                                font.bold: playlist.hasCurrent
-                                elide: Text.ElideRight
+                            ColumnLayout {
                                 Layout.fillWidth: true
+                                spacing: 2
+
+                                MarqueeText {
+                                    Layout.fillWidth: true
+                                    Layout.preferredHeight: 18
+                                    text:  playlist.hasCurrent ? playlist.currentTitle : "nothing playing"
+                                    color: playlist.hasCurrent ? root.primary : root.muted
+                                    font.pixelSize: 13
+                                    font.bold: playlist.hasCurrent
+                                }
+
+                                Text {
+                                    Layout.fillWidth: true
+                                    text: playlist.currentArtist
+                                    color: root.muted
+                                    font.pixelSize: 10
+                                    elide: Text.ElideRight
+                                    visible: text !== ""
+                                }
                             }
-                            Text {
-                                text: playlist.currentArtist
-                                color: root.muted
-                                font.pixelSize: 10
-                                elide: Text.ElideRight
-                                Layout.fillWidth: true
-                                visible: text !== ""
+
+                            // Chevron — click-to-expand (overlay wired below).
+                            Rectangle {
+                                id: chevBtn
+                                Layout.preferredWidth: 20
+                                Layout.preferredHeight: 20
+                                color: "transparent"
+                                radius: 10
+                                enabled: playlist.hasCurrent
+
+                                Text {
+                                    anchors.centerIn: parent
+                                    text: "⌄"
+                                    color: root.muted
+                                    font.pixelSize: 13
+                                    rotation: root.metadataExpanded ? 180 : 0
+                                    Behavior on rotation {
+                                        NumberAnimation { duration: 180 }
+                                    }
+                                }
+                                MouseArea {
+                                    anchors.fill: parent
+                                    onClicked: root.metadataExpanded =
+                                               !root.metadataExpanded
+                                }
                             }
                         }
                     }
@@ -381,11 +562,13 @@ ApplicationWindow {
                         spacing: 4
 
                         Text { text: "🔈"; color: root.muted; font.pixelSize: 11 }
-                        Slider {
+                        PLYRSeekSlider {
                             Layout.fillWidth: true
+                            Layout.preferredHeight: 24
                             from: 0; to: 1
+                            commitOnDrag: true
                             value: audioOutput.volume
-                            onMoved: audioOutput.volume = value
+                            onMoved: (v) => audioOutput.volume = v
                         }
                         Text { text: "🔊"; color: root.muted; font.pixelSize: 11 }
                     }

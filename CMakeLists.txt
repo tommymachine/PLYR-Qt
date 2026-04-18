@@ -37,6 +37,8 @@ qt_add_qml_module(plyr_qt
     VERSION     1.0
     QML_FILES
         qml/Main.qml
+        qml/PLYRSeekSlider.qml
+        qml/MarqueeText.qml
     SOURCES
         src/FlacTags.cpp
         src/FlacTags.h
