@@ -38,6 +38,12 @@ ApplicationWindow {
     MediaPlayer {
         id: mediaPlayer
         audioOutput: AudioOutput { id: audioOutput; volume: 1.0 }
+        // QAudioBufferOutput (Qt 6.7+) taps the rendered audio alongside
+        // normal playback, so we can feed the FFT visualizer without
+        // replacing the playback engine.
+        audioBufferOutput: AudioBufferOutput {
+            onAudioBufferReceived: (buffer) => fft.pushBuffer(buffer)
+        }
         source: playlist.currentUrl
         onSourceChanged: if (source.toString() !== "") play()
         onMediaStatusChanged: {
@@ -392,13 +398,105 @@ ApplicationWindow {
                 }
             }
 
+            // Right: visualizer (Canvas-based initial pass).
             Rectangle {
                 SplitView.minimumWidth: 280
                 color: root.bg
-                Text {
-                    anchors.centerIn: parent
-                    color: root.muted
-                    text: "visualizer goes here"
+
+                Canvas {
+                    id: viz
+                    anchors.fill: parent
+
+                    readonly property int bandCount: 16
+                    readonly property int segCount:  110
+                    readonly property real segDecay: 0.98
+                    readonly property real bandDecay: 0.95
+                    readonly property real barGap: 0.18
+                    readonly property real segGap: 0.28
+                    readonly property real taperK: 0.7
+
+                    readonly property color ocean: root.ocean
+                    readonly property color sky:   root.sky
+                    readonly property color peak:  Qt.rgba(0.87, 0.87, 0.87, 1.0)
+
+                    Timer {
+                        interval: 16   // ~60 Hz
+                        running: true
+                        repeat: true
+                        onTriggered: viz.requestPaint()
+                    }
+
+                    onPaint: {
+                        const ctx = getContext("2d")
+                        const W = width, H = height
+                        if (W <= 0 || H <= 0) return
+
+                        ctx.fillStyle = "black"
+                        ctx.fillRect(0, 0, W, H)
+
+                        const data = fft.bandsAndPeaks()
+                        if (!data || data.length < 2 * bandCount) return
+
+                        // Pre-compute band slot widths (geometric decay).
+                        const bandDenom = 1.0 - Math.pow(bandDecay, bandCount)
+
+                        // Pre-compute segment heights (normalized sum = 1).
+                        const segTotal = (1.0 - Math.pow(segDecay, segCount)) /
+                                         (1.0 - segDecay)
+
+                        for (let bi = 0; bi < bandCount; ++bi) {
+                            const mag  = data[bi]
+                            const pk   = data[bandCount + bi]
+                            const slotCum = (1.0 - Math.pow(bandDecay, bi)) / bandDenom
+                            const slotW   = Math.pow(bandDecay, bi) * (1.0 - bandDecay) / bandDenom
+                            const slotCenter = (slotCum + slotW * 0.5) * W
+
+                            let cumH = 0
+                            for (let si = 0; si < segCount; ++si) {
+                                const segH  = Math.pow(segDecay, si) / segTotal
+                                const segFill = segH * (1 - segGap)
+                                const yBot = cumH * H
+                                const yTop = (cumH + segFill) * H
+                                const segMid = cumH + segH * 0.5
+                                cumH += segH
+
+                                const lit    = segMid <= mag
+                                const isPeak = (pk > 0.001) && (segMid - segH*0.5 <= pk && pk < segMid + segH*0.5)
+
+                                if (!lit && !isPeak) continue
+
+                                // Taper the bar width at this y.
+                                const yNorm = 1.0 - (cumH - segH * 0.5)   // y=0 at top, 1 at bottom in UV; invert
+                                const taper = Math.exp(-taperK * (1.0 - yNorm))
+                                const halfW = slotW * W * (1.0 - barGap) * 0.5 * taper
+
+                                // Map yBot / yTop so that y grows downward on canvas.
+                                const canvasYTop = H - yTop
+                                const canvasYBot = H - yBot
+
+                                // Gradient color (ocean → sky) for this segment's t value.
+                                const t = si / (segCount - 1)
+                                const r = ocean.r + t * (sky.r - ocean.r)
+                                const g = ocean.g + t * (sky.g - ocean.g)
+                                const b = ocean.b + t * (sky.b - ocean.b)
+
+                                if (isPeak) {
+                                    // Grayed-out version for peak.
+                                    const Y = 0.2126 * r + 0.7152 * g + 0.0722 * b
+                                    ctx.fillStyle = Qt.rgba(Y, Y, Y, 1.0)
+                                } else {
+                                    ctx.fillStyle = Qt.rgba(r, g, b, 1.0)
+                                }
+
+                                ctx.fillRect(
+                                    slotCenter - halfW,
+                                    canvasYTop,
+                                    halfW * 2,
+                                    canvasYBot - canvasYTop
+                                )
+                            }
+                        }
+                    }
                 }
             }
         }
