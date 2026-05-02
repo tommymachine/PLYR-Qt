@@ -18,10 +18,11 @@ class PlaylistModel : public QAbstractListModel {
     Q_OBJECT
     QML_ELEMENT
 
-    Q_PROPERTY(int     currentIndex READ currentIndex WRITE setCurrentIndex NOTIFY currentIndexChanged)
-    Q_PROPERTY(int     count        READ count                               NOTIFY countChanged)
-    Q_PROPERTY(QString folderPath   READ folderPath                          NOTIFY folderPathChanged)
-    Q_PROPERTY(bool    isScanning   READ isScanning                          NOTIFY isScanningChanged)
+    Q_PROPERTY(int     currentIndex   READ currentIndex WRITE setCurrentIndex NOTIFY currentIndexChanged)
+    Q_PROPERTY(int     count          READ count                               NOTIFY countChanged)
+    Q_PROPERTY(QString folderPath     READ folderPath                          NOTIFY folderPathChanged)
+    Q_PROPERTY(bool    isScanning     READ isScanning                          NOTIFY isScanningChanged)
+    Q_PROPERTY(QStringList recentFolders READ recentFolders                    NOTIFY recentFoldersChanged)
 
     // Convenience accessors for whatever track is currently selected. All
     // re-emit on currentIndexChanged so QML bindings update automatically.
@@ -91,11 +92,21 @@ public:
     Q_INVOKABLE void next();
     Q_INVOKABLE void previous();
 
+    QStringList recentFolders() const { return m_recentFolders; }
+    Q_INVOKABLE void clearRecents();
+
+    Q_INVOKABLE QUrl urlAt(int index) const {
+        return (index >= 0 && index < int(m_tracks.size()))
+               ? QUrl::fromLocalFile(m_tracks[index].url)
+               : QUrl();
+    }
+
 signals:
     void currentIndexChanged();
     void countChanged();
     void folderPathChanged();
     void isScanningChanged();
+    void recentFoldersChanged();
 
 private:
     const Track* cur() const {
@@ -104,8 +115,16 @@ private:
                : nullptr;
     }
 
+    // Recent-folders history — persisted via QSettings. Cap is the most
+    // entries we keep; older ones fall off the end on new opens.
+    static constexpr int kRecentCap = 10;
+    void pushRecent(const QString& path);
+    void loadRecents();
+    void saveRecents() const;
+
     QVector<Track> m_tracks;
     int            m_currentIndex = -1;
     QString        m_folderPath;
     bool           m_scanning = false;
+    QStringList    m_recentFolders;
 };

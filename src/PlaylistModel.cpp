@@ -2,12 +2,15 @@
 
 #include <QDir>
 #include <QDirIterator>
+#include <QSettings>
 #include <QUrl>
 #include <algorithm>
 
 PlaylistModel::PlaylistModel(QObject* parent)
     : QAbstractListModel(parent)
-{}
+{
+    loadRecents();
+}
 
 QVariant PlaylistModel::data(const QModelIndex& idx, int role) const
 {
@@ -67,6 +70,7 @@ void PlaylistModel::openFolder(const QString& path)
 
     m_folderPath = path;
     emit folderPathChanged();
+    pushRecent(path);
 
     m_scanning = true;
     emit isScanningChanged();
@@ -117,4 +121,39 @@ void PlaylistModel::previous()
 {
     if (m_currentIndex > 0)
         setCurrentIndex(m_currentIndex - 1);
+}
+
+void PlaylistModel::clearRecents()
+{
+    if (m_recentFolders.isEmpty()) return;
+    m_recentFolders.clear();
+    saveRecents();
+    emit recentFoldersChanged();
+}
+
+void PlaylistModel::pushRecent(const QString& path)
+{
+    if (path.isEmpty()) return;
+    // Dedup first so re-opening a folder just moves it to the top.
+    m_recentFolders.removeAll(path);
+    m_recentFolders.prepend(path);
+    while (m_recentFolders.size() > kRecentCap)
+        m_recentFolders.removeLast();
+    saveRecents();
+    emit recentFoldersChanged();
+}
+
+void PlaylistModel::loadRecents()
+{
+    QSettings s;
+    m_recentFolders = s.value(QStringLiteral("recentFolders")).toStringList();
+    // Cap at kRecentCap in case persistence ever grows it (defensive).
+    while (m_recentFolders.size() > kRecentCap)
+        m_recentFolders.removeLast();
+}
+
+void PlaylistModel::saveRecents() const
+{
+    QSettings s;
+    s.setValue(QStringLiteral("recentFolders"), m_recentFolders);
 }

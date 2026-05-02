@@ -1,254 +1,168 @@
 #include "AudioEngine.h"
-#include "FftProcessor.h"
+#include "AudioWorker.h"
 
-#include <QAudioBuffer>
-#include <QDebug>
-#include <QtAudio>
-#include <cstring>
-
-namespace {
-// Canonical internal format. Everything is resampled to this on decode
-// so the sink, pipe, FFT, and position math all agree on a single shape.
-QAudioFormat makeFormat()
-{
-    QAudioFormat f;
-    f.setSampleRate(44100);
-    f.setChannelCount(2);
-    f.setSampleFormat(QAudioFormat::Float);
-    return f;
-}
-}
+#include <QMutexLocker>
+#include <QThread>
 
 
 AudioEngine::AudioEngine(QObject* parent)
     : QObject(parent)
-    , m_fmt(makeFormat())
 {
-    m_decoder.setAudioFormat(m_fmt);
+    m_thread = new QThread(this);
+    m_thread->setObjectName("ConcertoAudio");
 
-    m_sink = std::make_unique<QAudioSink>(m_fmt, this);
-    m_sink->setVolume(m_volume);
+    // Worker is unparented because it must moveToThread — Qt forbids
+    // moving a QObject across threads if it has a parent on a different
+    // thread. We manually delete it after the thread stops.
+    m_worker = new AudioWorker();
+    m_worker->moveToThread(m_thread);
 
-    connect(&m_decoder, &QAudioDecoder::bufferReady,
-            this, &AudioEngine::onBufferReady);
-    connect(&m_decoder, &QAudioDecoder::finished,
-            this, &AudioEngine::onDecoderFinished);
-    connect(&m_decoder, &QAudioDecoder::durationChanged,
-            this, [this](qint64 ms) {
-                // QAudioDecoder fires one durationChanged with the real
-                // length early on, then a second one with -1 when decode
-                // finishes (its "no longer decoding" sentinel). Ignore
-                // non-positive values so the real duration sticks — QML
-                // binds slider `to:` against this.
-                if (ms <= 0) return;
-                m_durationMs = ms;
-                emit durationChanged();
-            });
-    // `error` signal shares its name with the `error()` getter; use
-    // QOverload to disambiguate.
-    connect(&m_decoder, QOverload<QAudioDecoder::Error>::of(&QAudioDecoder::error),
-            this, [](QAudioDecoder::Error e) {
-                qWarning() << "QAudioDecoder error:" << e;
-            });
+    // Create the worker's Qt objects (sink, decoder, pipe, timer, EQ)
+    // AFTER moveToThread, so they get the audio thread's affinity.
+    connect(m_thread, &QThread::started, m_worker, &AudioWorker::init);
 
-    connect(m_sink.get(), &QAudioSink::stateChanged,
-            this, &AudioEngine::onSinkStateChanged);
+    // --- Worker → Engine: state updates (auto-queued, main thread). ---
+    connect(m_worker, &AudioWorker::engineReady,           this, &AudioEngine::onWorkerEngineReady);
+    connect(m_worker, &AudioWorker::workerSourceChanged,   this, &AudioEngine::onWorkerSource);
+    connect(m_worker, &AudioWorker::workerPositionChanged, this, &AudioEngine::onWorkerPosition);
+    connect(m_worker, &AudioWorker::workerDurationChanged, this, &AudioEngine::onWorkerDuration);
+    connect(m_worker, &AudioWorker::workerPlayingChanged,  this, &AudioEngine::onWorkerPlaying);
+    connect(m_worker, &AudioWorker::workerVolumeChanged,   this, &AudioEngine::onWorkerVolume);
+    connect(m_worker, &AudioWorker::workerTrackEnded,      this, &AudioEngine::onWorkerTrackEnded);
+    connect(m_worker, &AudioWorker::workerActiveTrackChanged, this, &AudioEngine::onWorkerActiveTrack);
+    connect(m_worker, &AudioWorker::workerReadyForNextTrack,  this, &AudioEngine::onWorkerReadyForNextTrack);
 
-    connect(&m_pipe, &PcmPipe::samplesServed,
-            this, &AudioEngine::onSamplesServed,
-            Qt::DirectConnection);
+    // --- Engine → Worker: commands (auto-queued, audio thread). ---
+    connect(this, &AudioEngine::requestPlay,      m_worker, &AudioWorker::play);
+    connect(this, &AudioEngine::requestPause,     m_worker, &AudioWorker::pause);
+    connect(this, &AudioEngine::requestStop,      m_worker, &AudioWorker::stop);
+    connect(this, &AudioEngine::requestSeek,      m_worker, &AudioWorker::seek);
+    connect(this, &AudioEngine::requestSetSource, m_worker, &AudioWorker::setSource);
+    connect(this, &AudioEngine::requestSetVolume, m_worker, &AudioWorker::setVolume);
+    connect(this, &AudioEngine::requestPlayAt,    m_worker, &AudioWorker::playAt);
+    connect(this, &AudioEngine::requestEnqueueAt, m_worker, &AudioWorker::enqueueAt);
 
-    // Drive positionChanged at ~30 Hz so QML sliders feel smooth.
-    m_positionTimer.setInterval(33);
-    connect(&m_positionTimer, &QTimer::timeout,
-            this, [this]() { emit positionChanged(); });
+    m_thread->start();
 }
+
 
 AudioEngine::~AudioEngine()
 {
-    m_decoder.stop();
-    if (m_sink) m_sink->stop();
+    if (m_thread && m_thread->isRunning()) {
+        // Tear down worker's Qt objects on the worker's thread, then
+        // stop the event loop. BlockingQueued waits for shutdown() to
+        // return before we continue.
+        QMetaObject::invokeMethod(m_worker, "shutdown",
+                                  Qt::BlockingQueuedConnection);
+        m_thread->quit();
+        m_thread->wait();
+    }
+    // Worker's thread is stopped; safe to delete from main. Qt may warn
+    // about cross-thread destruction but there's no pending work.
+    delete m_worker;
+    m_worker = nullptr;
+    // m_thread is a child of this; Qt deletes it automatically.
 }
 
+
+void AudioEngine::setFftProcessor(FftProcessor* fft)
+{
+    // Safe: the worker exists (constructed in our ctor) and hasn't touched
+    // its m_fft yet (init() runs when the thread starts and connections
+    // deliver events). A single pointer store pre-thread-start is fine.
+    if (m_worker) m_worker->setFftProcessor(fft);
+}
+
+
+// ---- Property reads ------------------------------------------------------
+
+QUrl AudioEngine::source() const
+{
+    QMutexLocker lk(&m_sourceMutex);
+    return m_sourceCache;
+}
+
+
+// ---- Setters & invokables (fire-and-forget to worker) -------------------
 
 void AudioEngine::setSource(const QUrl& u)
 {
-    if (u == m_source) return;
-    m_source = u;
-    emit sourceChanged();
-
-    qInfo() << "AudioEngine::setSource:" << u;
-
-    // Tear down anything currently running.
-    m_decoder.stop();
-    if (m_sink) m_sink->stop();
-    m_pipe.clearAll();
-    m_decoderDone = false;
-    m_sinkStarted = false;
-    m_durationMs  = 0;
-    m_baseUSec    = 0;
-    emit durationChanged();
-    emit positionChanged();
-
-    if (u.isEmpty()) return;
-
-    m_decoder.setSource(u);
-    m_decoder.start();
+    emit requestSetSource(u);
 }
-
 
 void AudioEngine::setVolume(float v)
 {
-    if (std::abs(v - m_volume) < 1e-6f) return;
-    m_volume = v;
-    if (m_sink) m_sink->setVolume(v);
-    emit volumeChanged();
+    if (std::abs(m_volumeCache.load() - v) < 1e-6f) return;
+    m_volumeCache.store(v);
+    emit volumeChanged();            // QML reacts to cache change immediately
+    emit requestSetVolume(v);        // worker applies to sink on its thread
 }
 
+void AudioEngine::play()                                      { emit requestPlay(); }
+void AudioEngine::pause()                                     { emit requestPause(); }
+void AudioEngine::stop()                                      { emit requestStop(); }
+void AudioEngine::seek(qint64 ms)                             { emit requestSeek(ms); }
+void AudioEngine::playAt(int idx, const QUrl& url)            { emit requestPlayAt(idx, url); }
+void AudioEngine::enqueueAt(int idx, const QUrl& url)         { emit requestEnqueueAt(idx, url); }
 
-void AudioEngine::play()
+
+// ---- Worker → Engine slots ----------------------------------------------
+
+void AudioEngine::onWorkerEngineReady()
 {
-    if (!m_sink) return;
-    if (m_sink->state() == QtAudio::SuspendedState) {
-        m_sink->resume();
-    } else if (!m_sinkStarted) {
-        startSinkIfNeeded();
+    m_eqCache.store(m_worker ? m_worker->eqEngine() : nullptr);
+    emit engineReady();
+}
+
+void AudioEngine::onWorkerSource(QUrl url)
+{
+    {
+        QMutexLocker lk(&m_sourceMutex);
+        m_sourceCache = url;
     }
-    if (!m_playing) { m_playing = true; emit playingChanged(); m_positionTimer.start(); }
+    emit sourceChanged();
 }
 
-void AudioEngine::pause()
+void AudioEngine::onWorkerPosition(qint64 ms)
 {
-    if (m_sink && m_sink->state() == QtAudio::ActiveState) m_sink->suspend();
-    if (m_playing) { m_playing = false; emit playingChanged(); m_positionTimer.stop(); }
-}
-
-void AudioEngine::stop()
-{
-    m_decoder.stop();
-    if (m_sink) m_sink->stop();
-    m_pipe.clearAll();
-    m_sinkStarted = false;
-    m_decoderDone = false;
-    m_baseUSec    = 0;
-    if (m_playing) { m_playing = false; emit playingChanged(); m_positionTimer.stop(); }
+    m_positionCache.store(ms);
     emit positionChanged();
 }
 
-
-qint64 AudioEngine::bytesPerMs() const
+void AudioEngine::onWorkerDuration(qint64 ms)
 {
-    // m_fmt.bytesPerSample() * channels * sampleRate / 1000
-    return qint64(m_fmt.bytesPerSample()) *
-           m_fmt.channelCount() *
-           m_fmt.sampleRate() / 1000;
+    m_durationCache.store(ms);
+    emit durationChanged();
 }
 
-
-qint64 AudioEngine::position() const
+void AudioEngine::onWorkerPlaying(bool p)
 {
-    // processedUSecs is time-of-audio-actually-rendered since start();
-    // add the file-time this start() began at for the absolute position.
-    const qint64 rendered = m_sinkStarted && m_sink
-                          ? m_sink->processedUSecs()
-                          : 0;
-    return (m_baseUSec + rendered) / 1000;
+    m_playingCache.store(p);
+    emit playingChanged();
 }
 
-
-void AudioEngine::seek(qint64 ms)
+void AudioEngine::onWorkerVolume(float v)
 {
-    if (ms < 0) ms = 0;
-    if (m_durationMs > 0 && ms > m_durationMs) ms = m_durationMs;
-
-    const qint64 bpm = bytesPerMs();
-    qint64 byteOffset = ms * bpm;
-
-    // Frame-align (don't slice through a sample).
-    const qint64 bytesPerFrame = qint64(m_fmt.bytesPerSample()) * m_fmt.channelCount();
-    byteOffset = (byteOffset / bytesPerFrame) * bytesPerFrame;
-
-    // Clamp to what the decoder has produced so far.
-    const qint64 avail = m_pipe.totalSize();
-    if (byteOffset > avail) byteOffset = avail;
-
-    // Reposition atomically: stop the sink so it's not mid-read, seek
-    // the pipe, start the sink again. Preserves playing/paused state.
-    // Update m_baseUSec to the new file-time; processedUSecs will reset
-    // to 0 on the next start(), and position() adds base + rendered.
-    const bool wasPlaying = m_playing;
-    if (m_sink) m_sink->stop();
-    m_sinkStarted = false;
-    m_baseUSec    = ms * 1000;
-
-    m_pipe.seekToPos(byteOffset);
-
-    startSinkIfNeeded();
-    if (!wasPlaying && m_sink) m_sink->suspend();
-
-    emit positionChanged();
-}
-
-
-void AudioEngine::startSinkIfNeeded()
-{
-    if (m_sinkStarted) return;
-    if (!m_sink) return;
-    // Give the pipe to the sink in pull mode.
-    m_sink->start(&m_pipe);
-    m_sinkStarted = true;
-}
-
-
-void AudioEngine::onBufferReady()
-{
-    while (m_decoder.bufferAvailable()) {
-        const QAudioBuffer buf = m_decoder.read();
-        const auto bytes = buf.byteCount();
-        if (bytes <= 0) continue;
-        m_pipe.append(QByteArray(
-            reinterpret_cast<const char*>(buf.constData<char>()), bytes));
-    }
-
-    // Start the sink once we have something to play. Honor paused state.
-    if (!m_sinkStarted) {
-        startSinkIfNeeded();
-        if (m_playing) {
-            // nothing extra; start() already active
-        } else {
-            // No explicit play() yet — leave suspended.
-            if (m_sink) m_sink->suspend();
-        }
-        if (!m_playing) {
-            // Auto-play on source change, matching earlier UX.
-            m_playing = true;
-            emit playingChanged();
-            if (m_sink && m_sink->state() == QtAudio::SuspendedState)
-                m_sink->resume();
-            m_positionTimer.start();
-        }
+    // Cache may already match (we updated it in setVolume). Still emit in
+    // case the worker adjusted it for some reason (clamping, etc.).
+    if (std::abs(m_volumeCache.load() - v) > 1e-6f) {
+        m_volumeCache.store(v);
+        emit volumeChanged();
     }
 }
 
-
-void AudioEngine::onDecoderFinished()
+void AudioEngine::onWorkerTrackEnded()
 {
-    m_decoderDone = true;
+    emit trackEnded();
 }
 
-
-void AudioEngine::onSinkStateChanged(QtAudio::State state)
+void AudioEngine::onWorkerActiveTrack(int idx)
 {
-    // When the sink runs out of data AND the decoder is done, we've
-    // finished playing the whole track.
-    if (state == QtAudio::IdleState && m_decoderDone) {
-        if (m_playing) { m_playing = false; emit playingChanged(); m_positionTimer.stop(); }
-        emit trackEnded();
-    }
+    m_activeIndexCache.store(idx);
+    emit activeTrackChanged(idx);
 }
 
-
-void AudioEngine::onSamplesServed(const char* data, qint64 bytes)
+void AudioEngine::onWorkerReadyForNextTrack()
 {
-    if (m_fft) m_fft->pushPcm(data, bytes, m_fmt);
+    emit readyForNextTrack();
 }

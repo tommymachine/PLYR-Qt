@@ -2,7 +2,7 @@ import QtQuick
 import QtQuick.Window
 import QtQuick.Controls
 import QtQuick.Layouts
-import QtQuick.Dialogs
+import Qt.labs.platform as Platform
 
 ApplicationWindow {
     id: root
@@ -11,7 +11,7 @@ ApplicationWindow {
     minimumWidth: 800
     minimumHeight: 560
     visible: true
-    title: "PLYR Qt"
+    title: "Concerto"
     color: "black"
 
     // PLYR palette (mirrors the Swift version).
@@ -24,10 +24,124 @@ ApplicationWindow {
     readonly property color veryMuted:   Qt.rgba(1.0, 1.0, 1.0, 0.25)
     readonly property color subtleLine:  Qt.rgba(1.0, 1.0, 1.0, 0.10)
 
-    FolderDialog {
+    // Custom in-process folder picker. Replaces Qt's FolderDialog, which
+    // was using its QML fallback implementation and was visibly slow to
+    // open on macOS (the prewarm of NSOpenPanel didn't help — Qt wasn't
+    // routing through it). This picker is FolderListModel-backed, so
+    // opening it is essentially instant.
+    FolderPicker {
         id: folderDialog
-        title: "Choose a folder of FLAC files"
-        onAccepted: playlist.openFolderUrl(selectedFolder)
+        x: (root.width  - width)  / 2
+        y: (root.height - height) / 2
+        width:  Math.min(root.width  - 80, 720)
+        height: Math.min(root.height - 80, 520)
+        recents: playlist.recentFolders
+        onAccepted: (url) => playlist.openFolderUrl(url)
+    }
+
+    // Aim the picker at the parent of the currently-loaded folder so the
+    // user lands on its siblings (the common case: switch to another album
+    // in the same artist directory). On first launch, fall back to ~/Music.
+    // Computed once per click rather than bound, so the dialog's own
+    // navigation while open isn't fought by the binding.
+    function _pathToFileUrl(path) {
+        // Percent-encode each segment so spaces (and other URL-special
+        // chars) don't make the URL invalid — otherwise Qt silently drops
+        // it and macOS's NSOpenPanel reuses its last-shown folder.
+        return "file://" + path.split("/").map(encodeURIComponent).join("/")
+    }
+    function openFolderPicker() {
+        var url
+        var p = playlist.folderPath
+        // Strip a trailing slash so lastIndexOf finds the *parent's* slash
+        // rather than the path's own trailing one.
+        if (p.length > 1 && p.endsWith("/")) p = p.substring(0, p.length - 1)
+        if (p !== "") {
+            const i = p.lastIndexOf("/")
+            if (i > 0) url = Qt.url(_pathToFileUrl(p.substring(0, i)))
+        }
+        if (!url) {
+            url = Platform.StandardPaths.writableLocation(
+                Platform.StandardPaths.MusicLocation)
+        }
+        // Re-query volumes per open so newly mounted/ejected drives are
+        // reflected immediately. Recents are already reactive (the
+        // playlist signals recentFoldersChanged).
+        folderDialog.volumes = systemPaths.mountedVolumes()
+        folderDialog.openAt(url)
+    }
+
+    // Shared dropdown menu for the split-button's chevron, right-click on
+    // the main button, and long-press on mobile. Static "Open Folder…" on
+    // top, dynamic recents in the middle (filled via Instantiator from
+    // playlist.recentFolders), "Clear Recents" at the bottom.
+    Menu {
+        id: recentsMenu
+
+        MenuItem {
+            text: "Open Folder…"
+            onTriggered: root.openFolderPicker()
+        }
+
+        MenuSeparator {
+            visible: playlist.recentFolders.length > 0
+        }
+
+        Instantiator {
+            model: playlist.recentFolders
+            delegate: MenuItem {
+                required property var modelData
+                required property int index
+                text: {
+                    const parts = modelData.split("/").filter(p => p.length > 0)
+                    const name = parts[parts.length - 1] || modelData
+                    return "/" + name
+                }
+                // Full path in the Tool Tip on hover. Qt Controls Basic
+                // doesn't show tooltips inside Menu natively everywhere,
+                // but where it does, the full path is there.
+                ToolTip.text: modelData
+                ToolTip.visible: hovered
+                ToolTip.delay: 500
+                onTriggered: playlist.openFolder(modelData)
+            }
+            onObjectAdded: (index, object) => recentsMenu.insertItem(2 + index, object)
+            onObjectRemoved: (index, object) => recentsMenu.removeItem(object)
+        }
+
+        MenuSeparator {
+            visible: playlist.recentFolders.length > 0
+        }
+
+        MenuItem {
+            text: "Clear Recents"
+            enabled: playlist.recentFolders.length > 0
+            onTriggered: playlist.clearRecents()
+        }
+    }
+
+    // EQ overlay. Modal popup with backdrop dismiss; the panel itself is
+    // EqPanel.qml and gets its data from the `eq` context property.
+    Popup {
+        id: eqPopup
+        x: (root.width  - width)  / 2
+        y: (root.height - height) / 2
+        width:  Math.min(root.width  - 60, 860)
+        height: Math.min(root.height - 60, 540)
+        modal: true
+        focus: true
+        closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside
+        padding: 0
+
+        background: Rectangle { color: "transparent" }  // EqPanel draws its own
+
+        contentItem: EqPanel {
+            onCloseRequested: eqPopup.close()
+        }
+
+        Overlay.modal: Rectangle {
+            color: Qt.rgba(0, 0, 0, 0.55)
+        }
     }
 
     // Playback: `audio` is a C++ AudioEngine instance (main.cpp ctx-prop).
@@ -35,8 +149,29 @@ ApplicationWindow {
     // gets PCM samples while normal playback runs through QAudioOutput.
     readonly property bool isPlaying: audio.playing
 
-    // Drives the metadata panel (opened via chevron, dismissed by click-out).
+    // Metadata overlay open/close — hover driven. `_hoveringCard` and
+    // `_hoveringOverlay` are updated by HoverHandlers below. While either
+    // is true the overlay stays open; when both go false, a short grace
+    // timer gives the pointer time to travel between them without flicker.
+    property bool _hoveringCard:    false
+    property bool _hoveringOverlay: false
+    readonly property bool _anyHover: _hoveringCard || _hoveringOverlay
     property bool metadataExpanded: false
+
+    on_AnyHoverChanged: {
+        if (_anyHover) {
+            hideOverlayTimer.stop()
+            metadataExpanded = true
+        } else if (metadataExpanded) {
+            hideOverlayTimer.restart()
+        }
+    }
+
+    Timer {
+        id: hideOverlayTimer
+        interval: 160
+        onTriggered: root.metadataExpanded = false
+    }
 
     function formatDuration(seconds) {
         if (!isFinite(seconds) || seconds < 0) return "0:00"
@@ -45,54 +180,44 @@ ApplicationWindow {
         return m + ":" + (s < 10 ? "0" + s : s)
     }
 
-    // Full-window tap-catcher: any click while the overlay is open
-    // dismisses. Sits below the overlay in z-order so clicks that land
-    // on the overlay itself are handled by its own MouseArea first.
-    MouseArea {
-        z: 150
-        anchors.fill: parent
-        visible: root.metadataExpanded
-        onClicked: root.metadataExpanded = false
-    }
-
     // ------------------------------------------------------------------
-    // Metadata overlay: sits directly above the now-playing card,
-    // same width, extending upward. Taller because it includes the
-    // metadata rows. Fades in instantly when metadataExpanded = true.
-    // Positioned by absolute x/y because `transport` lives inside the
-    // ColumnLayout and can't be anchor-targeted from this outer Item.
+    // Metadata overlay: parented to the now-playing card so its bottom
+    // always lines up with the card's bottom — the overlay extends
+    // upward from there, revealing metadata rows above a faux-card strip
+    // that sits exactly on top of (and visually replaces) the real card.
     // ------------------------------------------------------------------
     Rectangle {
         id: metadataOverlay
+        parent: nowCard
         z: 200
         visible: root.metadataExpanded && playlist.hasCurrent
-        width: 260
-        height: 260 + 48   // metadata rows + card-sized bottom strip
-        // bottom-left corner of the overlay matches the now-playing card:
-        //   x = transport-row left + padding
-        //   y = window bottom - transport height + padding
-        x: 12
-        y: root.height - transport.height + 12 - height + 48
+        width: nowCard.width
+        // Auto-fit: the inner ColumnLayout's implicitHeight tracks the
+        // actual metadata rows + the bottom faux-card strip, so the
+        // overlay is exactly as tall as it needs to be.
+        height: overlayContent.implicitHeight
+        x: 0
+        y: nowCard.height - height  // overlay.bottom == card.bottom
         color: Qt.rgba(0.08, 0.08, 0.10, 0.92)
         radius: 10
         border.color: Qt.rgba(1, 1, 1, 0.10)
         border.width: 1
 
-        // Soak up clicks that land on the overlay itself — user wants
-        // "any click dismisses", including on the overlay.
-        MouseArea {
-            anchors.fill: parent
-            onClicked: root.metadataExpanded = false
+        // Hover on the overlay itself keeps it open. Combined with the
+        // card's HoverHandler, the panel stays up while the pointer is
+        // over either zone; the hide timer covers the transition gap.
+        HoverHandler {
+            onHoveredChanged: root._hoveringOverlay = hovered
         }
 
         ColumnLayout {
+            id: overlayContent
             anchors.fill: parent
             spacing: 0
 
             // Metadata rows
             ColumnLayout {
                 Layout.fillWidth: true
-                Layout.fillHeight: true
                 Layout.margins: 14
                 spacing: 6
 
@@ -129,7 +254,6 @@ ApplicationWindow {
                         }
                     }
                 }
-                Item { Layout.fillHeight: true }  // soft bottom fill
             }
 
             // Faux-card bottom strip that visually merges with the real
@@ -150,13 +274,19 @@ ApplicationWindow {
                         Layout.fillWidth: true
                         spacing: 2
 
-                        Text {
+                        // Mirrors the card's marquee exactly (same text,
+                        // same style, same scroll offset). Because the
+                        // overlay's bottom strip sits on top of the real
+                        // card, this reads as one continuous label.
+                        MarqueeText {
                             Layout.fillWidth: true
-                            text: playlist.currentTitle
+                            Layout.preferredHeight: 18
+                            text:  playlist.currentTitle
                             color: root.primary
                             font.pixelSize: 13
                             font.bold: true
-                            elide: Text.ElideRight
+                            followExternal: true
+                            externalX: cardTitleMarquee.currentX
                         }
                         Text {
                             Layout.fillWidth: true
@@ -200,17 +330,54 @@ ApplicationWindow {
                 anchors.rightMargin: 10
                 spacing: 8
 
-                Text {
-                    text: "PLYR"
-                    color: root.primary
-                    font.family: "Menlo"
-                    font.bold: true
-                    font.pixelSize: 18
+                // Brand wordmark — replaces the old "CONCERTO" text.
+                // Native 6688×1024 (~6.53:1), downscaled to 22 pt tall.
+                // `sourceSize.height` at 2× ensures a crisp raster on
+                // retina without decoding the full 6688 every frame.
+                Image {
+                    source: "qrc:/qt/qml/PLYR/resources/images/concerto-logo.png"
+                    fillMode: Image.PreserveAspectFit
+                    Layout.preferredHeight: 22
+                    Layout.preferredWidth: 22 * 6688 / 1024   // ≈ 144
+                    sourceSize.height: 44
+                    smooth: true
                 }
 
-                Button {
-                    text: "Open Folder…"
-                    onClicked: folderDialog.open()
+                // Split button: left half opens the folder picker; right
+                // half (or right-click anywhere) opens the recents menu.
+                RowLayout {
+                    spacing: 0
+
+                    Button {
+                        id: openFolderBtn
+                        text: "📁"
+                        font.pixelSize: 16
+                        Layout.fillHeight: true
+                        Layout.preferredWidth: height
+                        padding: 0
+                        background: Rectangle { color: "transparent" }
+                        onClicked: root.openFolderPicker()
+                        ToolTip.text: "Open folder · right-click for recents"
+                        ToolTip.visible: hovered
+                        ToolTip.delay: 600
+
+                        // Right-click anywhere on the main button also opens
+                        // the recents menu. Left-clicks pass through to the
+                        // Button because this MouseArea only accepts Right.
+                        MouseArea {
+                            anchors.fill: parent
+                            acceptedButtons: Qt.RightButton
+                            onClicked: recentsMenu.popup(openFolderBtn, 0, openFolderBtn.height)
+                        }
+                    }
+
+                    Button {
+                        id: recentsChevron
+                        text: "\u25BE"    // ▾
+                        implicitWidth: 22
+                        padding: 4
+                        onClicked: recentsMenu.popup(recentsChevron, 0, recentsChevron.height)
+                    }
                 }
 
                 Text {
@@ -257,6 +424,40 @@ ApplicationWindow {
                     clip: true
                     model: playlist
                     spacing: 0
+
+                    // Matches the Swift pre-port behaviour: every time
+                    // currentIndex changes — startup, user pick, engine
+                    // advancing to the next track — smooth-scroll so the
+                    // current row lands in the middle of the viewport.
+                    // `positionViewAtIndex` alone is instant, so we use
+                    // it as a probe for the target contentY and then
+                    // animate from the current contentY to that target.
+                    SmoothedAnimation {
+                        id: centerAnim
+                        target:   listView
+                        property: "contentY"
+                        duration: 260
+                        velocity: -1
+                    }
+                    function centerCurrent() {
+                        if (playlist.currentIndex < 0 || count === 0) return
+                        Qt.callLater(function() {
+                            centerAnim.stop()
+                            const oldY = listView.contentY
+                            listView.positionViewAtIndex(
+                                playlist.currentIndex, ListView.Center)
+                            const targetY = listView.contentY
+                            listView.contentY = oldY
+                            centerAnim.to = targetY
+                            centerAnim.start()
+                        })
+                    }
+                    Connections {
+                        target: playlist
+                        function onCurrentIndexChanged() { listView.centerCurrent() }
+                    }
+                    onCountChanged:        if (count > 0) centerCurrent()
+                    Component.onCompleted: centerCurrent()
 
                     // Disc-based section headers.
                     section.property: "discFolder"
@@ -382,105 +583,51 @@ ApplicationWindow {
                 }
             }
 
-            // Right: visualizer (Canvas-based initial pass).
+            // Right: visualizer — GPU shader (Qt RHI ShaderEffect).
+            // All per-pixel band/segment work is done in shaders/viz.frag;
+            // this QML just pumps fresh FFT data and binds uniforms.
             Rectangle {
                 SplitView.minimumWidth: 280
                 color: root.bg
 
-                Canvas {
+                ShaderEffect {
                     id: viz
                     anchors.fill: parent
 
-                    readonly property int bandCount: 16
-                    readonly property int segCount:  110
-                    readonly property real segDecay: 0.98
-                    readonly property real bandDecay: 0.95
-                    readonly property real barGap: 0.18
-                    readonly property real segGap: 0.28
-                    readonly property real taperK: 0.7
+                    // FFT uniforms — re-evaluated whenever fft.updated() fires.
+                    property vector4d b0: fft.b0
+                    property vector4d b1: fft.b1
+                    property vector4d b2: fft.b2
+                    property vector4d b3: fft.b3
+                    property vector4d p0: fft.p0
+                    property vector4d p1: fft.p1
+                    property vector4d p2: fft.p2
+                    property vector4d p3: fft.p3
 
-                    readonly property color ocean: root.ocean
-                    readonly property color sky:   root.sky
-                    readonly property color peak:  Qt.rgba(0.87, 0.87, 0.87, 1.0)
+                    // Geometry + style uniforms.
+                    property color oceanColor: root.ocean
+                    property color skyColor:   root.sky
+                    property real  bandDecay:  0.95
+                    property real  segDecay:   0.98
+                    property real  barGap:     0.18
+                    property real  segGap:     0.28
+                    property real  taperK:     0.7
+                    property real  segCountF:  110.0
+                    property real  bandCountF: 16.0
 
-                    Timer {
-                        interval: 16   // ~60 Hz
-                        running: true
-                        repeat: true
-                        onTriggered: viz.requestPaint()
-                    }
+                    vertexShader:   "qrc:/shaders/viz.vert.qsb"
+                    fragmentShader: "qrc:/shaders/viz.frag.qsb"
+                }
 
-                    onPaint: {
-                        const ctx = getContext("2d")
-                        const W = width, H = height
-                        if (W <= 0 || H <= 0) return
-
-                        ctx.fillStyle = "black"
-                        ctx.fillRect(0, 0, W, H)
-
-                        const data = fft.bandsAndPeaks()
-                        if (!data || data.length < 2 * bandCount) return
-
-                        // Pre-compute band slot widths (geometric decay).
-                        const bandDenom = 1.0 - Math.pow(bandDecay, bandCount)
-
-                        // Pre-compute segment heights (normalized sum = 1).
-                        const segTotal = (1.0 - Math.pow(segDecay, segCount)) /
-                                         (1.0 - segDecay)
-
-                        for (let bi = 0; bi < bandCount; ++bi) {
-                            const mag  = data[bi]
-                            const pk   = data[bandCount + bi]
-                            const slotCum = (1.0 - Math.pow(bandDecay, bi)) / bandDenom
-                            const slotW   = Math.pow(bandDecay, bi) * (1.0 - bandDecay) / bandDenom
-                            const slotCenter = (slotCum + slotW * 0.5) * W
-
-                            let cumH = 0
-                            for (let si = 0; si < segCount; ++si) {
-                                const segH  = Math.pow(segDecay, si) / segTotal
-                                const segFill = segH * (1 - segGap)
-                                const yBot = cumH * H
-                                const yTop = (cumH + segFill) * H
-                                const segMid = cumH + segH * 0.5
-                                cumH += segH
-
-                                const lit    = segMid <= mag
-                                const isPeak = (pk > 0.001) && (segMid - segH*0.5 <= pk && pk < segMid + segH*0.5)
-
-                                if (!lit && !isPeak) continue
-
-                                // Taper the bar width at this y.
-                                const yNorm = 1.0 - (cumH - segH * 0.5)   // y=0 at top, 1 at bottom in UV; invert
-                                const taper = Math.exp(-taperK * (1.0 - yNorm))
-                                const halfW = slotW * W * (1.0 - barGap) * 0.5 * taper
-
-                                // Map yBot / yTop so that y grows downward on canvas.
-                                const canvasYTop = H - yTop
-                                const canvasYBot = H - yBot
-
-                                // Gradient color (ocean → sky) for this segment's t value.
-                                const t = si / (segCount - 1)
-                                const r = ocean.r + t * (sky.r - ocean.r)
-                                const g = ocean.g + t * (sky.g - ocean.g)
-                                const b = ocean.b + t * (sky.b - ocean.b)
-
-                                if (isPeak) {
-                                    // Grayed-out version for peak.
-                                    const Y = 0.2126 * r + 0.7152 * g + 0.0722 * b
-                                    ctx.fillStyle = Qt.rgba(Y, Y, Y, 1.0)
-                                } else {
-                                    ctx.fillStyle = Qt.rgba(r, g, b, 1.0)
-                                }
-
-                                ctx.fillRect(
-                                    slotCenter - halfW,
-                                    canvasYTop,
-                                    halfW * 2,
-                                    canvasYBot - canvasYTop
-                                )
-                            }
-                        }
-                    }
+                // Drives the FFT refresh at ~60 Hz. `refresh()` runs the
+                // FFT, updates bands/peaks, and emits updated() — which
+                // causes the ShaderEffect's property bindings above to
+                // re-evaluate and trigger a re-render.
+                Timer {
+                    interval: 16
+                    running:  true
+                    repeat:   true
+                    onTriggered: fft.refresh()
                 }
             }
         }
@@ -542,13 +689,20 @@ ApplicationWindow {
                     Layout.fillWidth: true
                     spacing: 16
 
-                    // Now-playing card — marquee title + artist + chevron toggle.
+                    // Now-playing card — marquee title + artist + chevron.
+                    // Hovering the card (or the overlay it reveals) expands
+                    // the metadata panel; moving off collapses it after a
+                    // short grace period (see root._anyHover).
                     Rectangle {
                         id: nowCard
                         Layout.preferredWidth: 260
                         Layout.preferredHeight: 48
                         color: Qt.rgba(1, 1, 1, 0.06)
                         radius: 8
+
+                        HoverHandler {
+                            onHoveredChanged: root._hoveringCard = hovered
+                        }
 
                         RowLayout {
                             anchors.fill: parent
@@ -561,6 +715,7 @@ ApplicationWindow {
                                 spacing: 2
 
                                 MarqueeText {
+                                    id: cardTitleMarquee
                                     Layout.fillWidth: true
                                     Layout.preferredHeight: 18
                                     text:  playlist.hasCurrent ? playlist.currentTitle : "nothing playing"
@@ -579,14 +734,14 @@ ApplicationWindow {
                                 }
                             }
 
-                            // Chevron — click-to-expand (overlay wired below).
+                            // Chevron — visual indicator that rotates with
+                            // the hover-driven overlay state. No MouseArea:
+                            // hovering anywhere on the card does the work.
                             Rectangle {
-                                id: chevBtn
                                 Layout.preferredWidth: 20
                                 Layout.preferredHeight: 20
                                 color: "transparent"
                                 radius: 10
-                                enabled: playlist.hasCurrent
 
                                 Text {
                                     anchors.centerIn: parent
@@ -597,11 +752,6 @@ ApplicationWindow {
                                     Behavior on rotation {
                                         NumberAnimation { duration: 180 }
                                     }
-                                }
-                                MouseArea {
-                                    anchors.fill: parent
-                                    onClicked: root.metadataExpanded =
-                                               !root.metadataExpanded
                                 }
                             }
                         }
@@ -633,6 +783,13 @@ ApplicationWindow {
                     }
 
                     Item { Layout.fillWidth: true }
+
+                    Button {
+                        text: "EQ"
+                        flat: true
+                        highlighted: eqPopup.opened
+                        onClicked: eqPopup.opened ? eqPopup.close() : eqPopup.open()
+                    }
 
                     RowLayout {
                         Layout.preferredWidth: 140

@@ -226,8 +226,59 @@ bool FftProcessor::fillBandsAndPeaks(float* out)
         out[BAND_COUNT + i] = m_peaks[i];
     }
 
+    // --- EQ-panel tap: 10 ISO octave bands (same dB normalization) -------
+    // Each band integrates a half-octave window around its ISO center so
+    // the bar lines up with what the corresponding EQ slider is shaping.
+    constexpr float eqIsoFreqs[EQ_BAND_COUNT] = {
+        31.5f, 63.0f, 125.0f, 250.0f, 500.0f,
+        1000.0f, 2000.0f, 4000.0f, 8000.0f, 16000.0f
+    };
+    const float halfOctave = std::sqrt(2.0f);
+
+    for (int i = 0; i < EQ_BAND_COUNT; ++i) {
+        const float fc = eqIsoFreqs[i];
+        const float f0 = fc / halfOctave;
+        const float f1 = fc * halfOctave;
+        int b0 = std::max(1, int(f0 / binHz));
+        int b1 = std::min(binCount - 1, std::max(b0, int(f1 / binHz)));
+        float sum = 0.0f;
+        for (int b = b0; b <= b1; ++b) {
+            const auto c = m_fft->spectrum[b];
+            sum += std::sqrt(c.r * c.r + c.i * c.i);
+        }
+        const float mag   = (sum / float(b1 - b0 + 1)) * norm;
+        const float db    = 20.0f * std::log10(std::max(mag, 1e-7f));
+        const float level = std::clamp((db + 80.0f) / 80.0f, 0.0f, 1.0f);
+
+        if (level >= m_eqBands[i]) m_eqBands[i] = level;
+        else                       m_eqBands[i] += (level - m_eqBands[i]) * release;
+
+        if (m_eqBands[i] >= m_eqPeaks[i]) {
+            m_eqPeaks[i] = m_eqBands[i];
+            m_eqPeakHoldFrames[i] = peakHoldFrames;
+        } else if (m_eqPeakHoldFrames[i] > 0) {
+            m_eqPeakHoldFrames[i]--;
+        } else {
+            m_eqPeaks[i] = std::max(0.0f, m_eqPeaks[i] - peakFallPerFrame);
+        }
+    }
+
     emit updated();
     return true;
+}
+
+QVariantList FftProcessor::eqBandsList() const {
+    QVariantList out;
+    out.reserve(EQ_BAND_COUNT);
+    for (int i = 0; i < EQ_BAND_COUNT; ++i) out.push_back(m_eqBands[i]);
+    return out;
+}
+
+QVariantList FftProcessor::eqPeaksList() const {
+    QVariantList out;
+    out.reserve(EQ_BAND_COUNT);
+    for (int i = 0; i < EQ_BAND_COUNT; ++i) out.push_back(m_eqPeaks[i]);
+    return out;
 }
 
 
