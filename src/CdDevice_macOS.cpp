@@ -21,6 +21,7 @@
 #include "CdDevice.h"
 
 #include <CoreFoundation/CoreFoundation.h>
+#include <DiskArbitration/DiskArbitration.h>
 #include <IOKit/IOBSD.h>
 #include <IOKit/IOKitLib.h>
 #include <IOKit/storage/IOCDMedia.h>
@@ -31,6 +32,7 @@
 #include <libkern/OSByteOrder.h>
 
 #include <cerrno>
+#include <chrono>
 #include <fcntl.h>
 #include <sys/ioctl.h>
 #include <unistd.h>
@@ -210,12 +212,141 @@ public:
     std::optional<std::string> readIsrc(uint8_t /*track*/) override {
         return std::nullopt;                                             // v2
     }
+    bool eject() override;
 
 private:
     DriveInfo   info_;
     int         fd_ = -1;
     std::string lastError_;
 };
+
+namespace {
+
+struct DaOpCtx {
+    bool           done      = false;
+    DADissenterRef dissenter = nullptr;     // owned +1
+};
+
+void daOpCallback(DADiskRef /*disk*/, DADissenterRef dissenter, void* ctx) {
+    auto* c = static_cast<DaOpCtx*>(ctx);
+    c->done = true;
+    if (dissenter) {
+        CFRetain(dissenter);
+        c->dissenter = dissenter;
+    }
+}
+
+// Pump the current run loop until `ctx.done` flips or timeout. On
+// failure (timeout or dissenter), `err` carries a description prefixed
+// by the op name. Returns true on clean success.
+bool waitForDaOp(DaOpCtx& ctx, double timeoutSec,
+                 const char* opName, std::string& err) {
+    const auto t0 = std::chrono::steady_clock::now();
+    while (!ctx.done) {
+        CFRunLoopRunInMode(kCFRunLoopDefaultMode, 0.1, true);
+        const auto elapsed = std::chrono::duration<double>(
+            std::chrono::steady_clock::now() - t0).count();
+        if (elapsed > timeoutSec) break;
+    }
+    if (!ctx.done) {
+        err = std::string(opName) + ": timed out";
+        return false;
+    }
+    if (ctx.dissenter) {
+        const CFStringRef msg = DADissenterGetStatusString(ctx.dissenter);
+        char buf[256] = {0};
+        if (msg)
+            CFStringGetCString(msg, buf, sizeof(buf), kCFStringEncodingUTF8);
+        err = std::string(opName) + " denied: " + (buf[0] ? buf : "(no detail)");
+        CFRelease(ctx.dissenter);
+        ctx.dissenter = nullptr;
+        return false;
+    }
+    return true;
+}
+
+} // namespace
+
+namespace {
+
+// Path A: ask DiskArbitration to negotiate the eject. Force-unmounts
+// first (so cddafs / Finder don't refuse), then ejects. Some
+// configurations — Spotlight indexing the disc, certain Finder window
+// states — refuse here without giving a useful reason. On `false`,
+// `err` carries the dissenter detail when DA produced one.
+bool ejectViaDA(const std::string& bsdName, std::string& err) {
+    DASessionRef session = DASessionCreate(kCFAllocatorDefault);
+    if (!session) { err = "DASessionCreate failed"; return false; }
+
+    const std::string devPath = "/dev/" + bsdName;
+    DADiskRef disk = DADiskCreateFromBSDName(
+        kCFAllocatorDefault, session, devPath.c_str());
+    if (!disk) {
+        CFRelease(session);
+        err = "DADiskCreateFromBSDName(" + devPath + ") failed";
+        return false;
+    }
+
+    DASessionScheduleWithRunLoop(session, CFRunLoopGetCurrent(),
+                                 kCFRunLoopDefaultMode);
+
+    {
+        DaOpCtx ctx;
+        DADiskUnmount(disk,
+                      kDADiskUnmountOptionWhole | kDADiskUnmountOptionForce,
+                      &daOpCallback, &ctx);
+        std::string ignored;
+        (void)waitForDaOp(ctx, 5.0, "unmount", ignored);
+    }
+
+    DaOpCtx ejectCtx;
+    DADiskEject(disk, kDADiskEjectOptionDefault, &daOpCallback, &ejectCtx);
+    const bool ok = waitForDaOp(ejectCtx, 8.0, "eject", err);
+
+    DASessionUnscheduleFromRunLoop(session, CFRunLoopGetCurrent(),
+                                   kCFRunLoopDefaultMode);
+    CFRelease(disk);
+    CFRelease(session);
+    return ok;
+}
+
+// Path B: shell out to Apple's system tools. `diskutil eject` knows
+// every corner case macOS's storage stack can throw at it (cddafs
+// holdouts, Spotlight indexing, Finder windows) and ships with the OS
+// — no third-party binary dependency. Used as a fallback when DA
+// negotiation is refused for non-obvious reasons.
+bool ejectViaDiskutil(const std::string& bsdName, std::string& err) {
+    const std::string cmd =
+        "/usr/sbin/diskutil eject /dev/" + bsdName + " > /dev/null 2>&1";
+    const int rc = std::system(cmd.c_str());
+    if (rc == 0) return true;
+    err = "diskutil eject failed (rc=" + std::to_string(rc) + ")";
+    return false;
+}
+
+} // namespace
+
+bool CdDeviceMac::eject() {
+    // Disc-eject is the only operation in CdDevice that can affect
+    // visible state outside this process — we close our FD first so a
+    // post-eject handle can't dangle.
+    if (fd_ >= 0) {
+        ::close(fd_);
+        fd_ = -1;
+    }
+
+    std::string daErr;
+    if (ejectViaDA(info_.id, daErr)) {
+        return true;
+    }
+    std::string sysErr;
+    if (ejectViaDiskutil(info_.id, sysErr)) {
+        return true;
+    }
+    // Surface the more specific of the two errors.
+    lastError_ = "DA: " + daErr + " | diskutil: " + sysErr;
+    return false;
+}
 
 ReadResult CdDeviceMac::readSectors(int32_t lba, uint32_t count,
                                     std::span<uint8_t> audio, bool wantC2) {

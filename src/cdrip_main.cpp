@@ -26,6 +26,8 @@
 //   --db-info    Diagnostic: print the bundled AccurateRip drive-offset
 //                table stats and a small sample of entries. For "did the
 //                resource embed?" / "is my drive recognized?" debugging.
+//   --eject      Open drive 0 and eject. Standalone test of the DA-based
+//                eject path used by --rip after read completion.
 
 #include "ArVerify.h"
 #include "CdDevice.h"
@@ -628,11 +630,13 @@ static int runRip(const char* outDir) {
                 totalSectors, firstLba, firstLba + int(totalSectors));
 
     constexpr uint32_t kChunk = 27;
-    uint32_t remaining  = totalSectors;
-    int32_t  lba        = firstLba;
-    uint64_t writeAt    = mainStart;
-    uint32_t readSoFar  = 0;
-    uint32_t nextReport = std::max<uint32_t>(totalSectors / 10, 1);
+    uint32_t remaining   = totalSectors;
+    int32_t  lba         = firstLba;
+    uint64_t writeAt     = mainStart;
+    uint32_t readSoFar   = 0;
+    uint32_t nextReport  = std::max<uint32_t>(totalSectors / 10, 1);
+    auto     milestoneT0 = std::chrono::steady_clock::now();
+    uint32_t milestoneSectors = 0;
 
     std::vector<ZeroFilledRange> zeroFilled;
     std::string lastReadError;
@@ -655,15 +659,29 @@ static int runRip(const char* outDir) {
                         lba, lba + int(n), lastReadError.c_str());
             std::fflush(stdout);
         }
-        writeAt   += uint64_t{n} * 2352;
-        remaining -= n;
-        lba       += static_cast<int32_t>(n);
-        readSoFar += n;
+        writeAt          += uint64_t{n} * 2352;
+        remaining        -= n;
+        lba              += static_cast<int32_t>(n);
+        readSoFar        += n;
+        milestoneSectors += n;
         if (readSoFar >= nextReport) {
-            std::printf("  %3u%%  LBA %d\n",
-                        readSoFar * 100u / totalSectors, lba);
+            const auto now = std::chrono::steady_clock::now();
+            const double dt = std::chrono::duration<double>(
+                now - milestoneT0).count();
+            const double rate = dt > 0
+                ? static_cast<double>(milestoneSectors) / dt
+                : 0.0;
+            // SuperDrive maxes around 24x (~1800 sec/s); the first rip
+            // here hit ~540 sec/s. If a milestone drops well below
+            // that, the drive is throttling — typically thermal after
+            // multiple consecutive reads of the same disc.
+            std::printf("  %3u%%  LBA %d   (%.0f sec/s, %.1fx)\n",
+                        readSoFar * 100u / totalSectors, lba,
+                        rate, rate / 75.0);
             std::fflush(stdout);
-            nextReport += std::max<uint32_t>(totalSectors / 10, 1);
+            nextReport      += std::max<uint32_t>(totalSectors / 10, 1);
+            milestoneT0      = now;
+            milestoneSectors = 0;
         }
     }
 
@@ -689,6 +707,16 @@ static int runRip(const char* outDir) {
         // Lead-in (negative LBA) reads aren't supported yet — pre-pad
         // stays zero-filled. Within AR's first-5-sector skip region for
         // typical drive offsets, so the verifier doesn't see it.
+    }
+
+    // All disc data is in memory now; the encode + sidecar phase doesn't
+    // touch the drive again. Eject so the user can swap in the next disc
+    // while we finish writing FLACs.
+    if (dev->eject()) {
+        std::printf("\ndisc ejected — drive is free for the next disc.\n");
+    } else {
+        std::printf("\n(eject failed: %s — eject manually when ready)\n",
+                    dev->lastDeviceError().c_str());
     }
 
     // Slice each track at canonical-aligned byte boundaries. Canonical
@@ -763,6 +791,26 @@ static int runRip(const char* outDir) {
     return EXIT_SUCCESS;
 }
 
+static int runEject() {
+    const auto drives = plyr::cd::CdDevice::enumerate();
+    if (drives.empty()) {
+        std::fprintf(stderr, "cdrip_cli: no optical drives with media\n");
+        return EXIT_FAILURE;
+    }
+    const auto& d = drives[0];
+    auto dev = plyr::cd::CdDevice::open(d.id);
+    if (!dev) {
+        std::fprintf(stderr, "open(%s) failed (errno=%d)\n", d.id.c_str(), errno);
+        return EXIT_FAILURE;
+    }
+    if (dev->eject()) {
+        std::printf("ejected /dev/%s\n", d.id.c_str());
+        return EXIT_SUCCESS;
+    }
+    std::fprintf(stderr, "eject failed: %s\n", dev->lastDeviceError().c_str());
+    return EXIT_FAILURE;
+}
+
 static int runDbInfo() {
     const int n = plyr::cd::driveOffsetTableSize();
     std::printf("AccurateRip drive-offset table: %d entries bundled.\n", n);
@@ -794,6 +842,7 @@ int main(int argc, char** argv) {
         if (std::strcmp(argv[i], "--shield")  == 0) return runShield();
         if (std::strcmp(argv[i], "--toc")     == 0) return runReadToc();
         if (std::strcmp(argv[i], "--db-info") == 0) return runDbInfo();
+        if (std::strcmp(argv[i], "--eject")   == 0) return runEject();
         if (std::strcmp(argv[i], "--read")   == 0) {
             uint32_t cap = 0;
             if (i + 1 < argc) {

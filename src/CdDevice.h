@@ -84,6 +84,14 @@ public:
     virtual std::string                lastDeviceError() const               = 0;
     virtual void                       cancel()                              = 0;
     virtual std::optional<std::string> readIsrc(uint8_t track)               = 0;
+
+    // Eject the disc tray (or, on slot-load drives, push the disc out).
+    // Returns true on success; on failure, lastDeviceError() carries the
+    // platform-specific reason (typically a DA claim held by another
+    // process or the drive being slot-load with no media). Callers
+    // should reach for this after the disc data is in memory — there's
+    // no need to keep the drive engaged during encode / verify.
+    virtual bool                       eject()                               = 0;
 };
 
 } // namespace plyr::cd
