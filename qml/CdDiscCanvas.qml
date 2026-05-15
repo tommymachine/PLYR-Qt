@@ -92,6 +92,40 @@ Item {
         loops: Animation.Infinite
     }
 
+    // Swing-in animation. Triggered by the rip view's onOpened —
+    // simultaneously sweeps the light's axis from −75° back into place
+    // *and* pulls it inward from a distant radius so the iridescence
+    // builds up as the light "approaches" the disc. Decoupled from the
+    // continuous _axisAngle / lightRadius so the steady drift
+    // underneath stays uninterrupted.
+    property real _swingOffset: 0       // radians, added to axisAngle
+    property real _radiusOffset: 0      // added to lightRadius
+    ParallelAnimation {
+        id: swingInAnim
+        NumberAnimation {
+            target: root
+            property: "_swingOffset"
+            from: -Math.PI * 0.42
+            to: 0
+            duration: 777
+            easing.type: Easing.OutExpo
+        }
+        NumberAnimation {
+            target: root
+            property: "_radiusOffset"
+            from: 4.5
+            to: 0
+            duration: 777
+            easing.type: Easing.OutExpo
+        }
+    }
+    function swingIn() {
+        swingInAnim.stop()
+        _swingOffset  = -Math.PI * 0.42
+        _radiusOffset = 4.5
+        swingInAnim.start()
+    }
+
     // Sweep line — the "drive head" indicator. Only visible during
     // active phases; matches the disc's slower mechanical rotation.
     NumberAnimation on _sweepAngle {
@@ -124,14 +158,16 @@ Item {
         property real dataInner:        root._dataInner
         property real dataOuter:        root._dataOuter
 
-        // Animated.
-        property real axisAngle:        root._axisAngle
+        // Animated. The swing-in offset rides on top of the continuous
+        // _axisAngle rotation, so the light eases into place when the
+        // rip view opens without disturbing the steady drift.
+        property real axisAngle:        root._axisAngle + root._swingOffset
         // Light sits at a fixed radial offset along the rotating axis —
         // no centre crossing. Pushed beyond the disc rim (>1) so the
         // light reads as a distant source rather than something sitting
         // on the surface; the iridescence's L direction varies less
         // across the disc, giving a more directional rainbow.
-        property real lightRadius:      2.60
+        property real lightRadius:      2.60 + root._radiusOffset
         // Viewer-tilt vector rotates with _viewPhase at its own rate.
         // 0.18 magnitude is enough to read dramatically without going
         // unphysical — Recipe 6 from the research suggested 0.12 as a

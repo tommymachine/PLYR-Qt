@@ -162,6 +162,11 @@ Popup {
         onActivated: ripper.demoToggleAutoAdvance()
     }
 
+    // When the rip view opens, swing the disc's light in — the
+    // CdDiscCanvas runs its `_swingOffset` from −75° → 0 with ease-out
+    // so the iridescent shimmer rolls in across the disc.
+    onOpened: disc.swingIn()
+
     // Auto-open the save picker once the rip enters SavePending. Guarded
     // by _savePickerArmed so re-entering the state (e.g. user cancelled
     // the picker and stepped back-then-forward) doesn't fire it twice on
