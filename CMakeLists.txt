@@ -240,8 +240,12 @@ if(NOT IOS AND NOT ANDROID)
         src/cdrip_main.cpp
         src/CdDevice.h
         src/CdShield.h
+        src/DriveOffsetDb.h
+        src/DriveOffsetDb.cpp
         src/FlacEncode.cpp
         src/FlacEncode.h
+        src/MusicBrainz.cpp
+        src/MusicBrainz.h
     )
     if(APPLE)
         list(APPEND CDRIP_SOURCES
@@ -251,10 +255,10 @@ if(NOT IOS AND NOT ANDROID)
     endif()
     qt_add_executable(cdrip_cli ${CDRIP_SOURCES})
     target_include_directories(cdrip_cli PRIVATE src)
-    # arverify provides the disc-ID math for the --toc cross-check; brings
-    # in Qt6::Core (SHA-1) and zlib transitively. FLAC is the vendored
-    # libFLAC static target used by --rip's per-track encoder.
-    target_link_libraries(cdrip_cli PRIVATE Qt6::Core arverify FLAC)
+    # arverify provides the disc-ID math; FLAC is the vendored libFLAC
+    # encoder; Qt6::Network is the transport for MusicBrainz lookups.
+    target_link_libraries(cdrip_cli PRIVATE
+        Qt6::Core Qt6::Network arverify FLAC)
     if(APPLE)
         target_link_libraries(cdrip_cli PRIVATE
             "-framework IOKit"

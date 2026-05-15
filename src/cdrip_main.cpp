@@ -27,7 +27,12 @@
 #include "ArVerify.h"
 #include "CdDevice.h"
 #include "CdShield.h"
+#include "DriveOffsetDb.h"
 #include "FlacEncode.h"
+#include "MusicBrainz.h"
+
+#include <QCoreApplication>
+#include <QNetworkAccessManager>
 
 #include <algorithm>
 #include <cerrno>
@@ -35,6 +40,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <cstdlib>     // std::abs
 #include <filesystem>
 #include <span>
 #include <string>
@@ -249,11 +255,52 @@ static int runReadAll(uint32_t cap) {
     return samplesRead == expectedSamples ? EXIT_SUCCESS : EXIT_FAILURE;
 }
 
-// Full disc rip: read every sector into memory, slice on TOC boundaries,
-// FLAC-encode each track with no tags and no drive-offset correction.
-// The point is to prove the end-to-end pipeline; AR's offset scan does
-// the bit-accuracy comparison against canonical pressings, so this rip
-// only needs to be self-consistent — drive-offset alignment lands next.
+// Derive a Vorbis-comment set for one track from a chosen MusicBrainz
+// release + the disc's MB ID. Same fields rip_cd.sh wrote: TITLE,
+// ARTIST, ALBUM, ALBUMARTIST, DATE, TRACKNUMBER, TRACKTOTAL,
+// DISCNUMBER/DISCTOTAL (multi-disc only), MUSICBRAINZ_*.
+//
+// Duplicated from mbquery_main.cpp's tagsForTrack — should land in a
+// shared header once the rip code stabilizes.
+static std::vector<flacencode::VorbisTag> tagsForTrack(
+    const musicbrainz::Release& rel,
+    int trackIndex0Based,
+    const std::string& mbDiscId)
+{
+    std::vector<flacencode::VorbisTag> tags;
+    auto add = [&](const char* field, const std::string& value) {
+        if (!value.empty()) tags.emplace_back(field, value);
+    };
+
+    const auto& tracks = rel.disc.tracks;
+    if (trackIndex0Based >= 0
+        && trackIndex0Based < static_cast<int>(tracks.size())) {
+        add("TITLE", tracks[trackIndex0Based].title);
+        if (!tracks[trackIndex0Based].recordingId.empty())
+            add("MUSICBRAINZ_TRACKID", tracks[trackIndex0Based].recordingId);
+    }
+    add("ARTIST", rel.artist);
+    add("ALBUMARTIST", rel.artist);
+    add("ALBUM", rel.title);
+    add("DATE", rel.date);
+    tags.emplace_back("TRACKNUMBER", std::to_string(trackIndex0Based + 1));
+    tags.emplace_back("TRACKTOTAL", std::to_string(tracks.size()));
+    if (rel.disc.totalCount > 1) {
+        tags.emplace_back("DISCNUMBER", std::to_string(rel.disc.position));
+        tags.emplace_back("DISCTOTAL", std::to_string(rel.disc.totalCount));
+    }
+    add("MUSICBRAINZ_DISCID", mbDiscId);
+    add("MUSICBRAINZ_ALBUMID", rel.id);
+    return tags;
+}
+
+// Full disc rip with drive-offset correction. Read range is widened by
+// `padSectors` at each disc edge so the slicing window can shift up to
+// |offset| sample frames in either direction; failed pad reads (lead-in
+// is unsupported on most slim USB drives, lead-out beyond the TOC's
+// reported leadOut is iffy too) are left zero-padded. Both AR and CTDB
+// skip 5 sectors at the disc edges, so a few frames of zero-padding
+// inside that region are invisible to the AR check.
 static int runRip(const char* outDir) {
     namespace fs = std::filesystem;
     std::error_code ec;
@@ -298,11 +345,59 @@ static int runRip(const char* outDir) {
 
     const int32_t  firstLba     = static_cast<int32_t>(toc->tracks.front().startLba);
     const uint32_t totalSectors = toc->leadOutLba - toc->tracks.front().startLba;
-    const uint64_t totalBytes   = uint64_t{totalSectors} * 2352;
 
-    std::printf("\nallocating %.1f MiB for full-disc PCM buffer\n",
-                static_cast<double>(totalBytes) / (1024.0 * 1024.0));
-    std::vector<uint8_t> disc(totalBytes);
+    // MusicBrainz lookup — done up front so a missing/slow network shows
+    // up before the ~10-min disc read, not after. The rip itself stays
+    // bit-accurate either way; missing MB just means tagless output.
+    arverify::DiscToc arToc;
+    arToc.trackOffsets.reserve(toc->tracks.size());
+    for (const auto& t : toc->tracks) {
+        arToc.trackOffsets.push_back(t.startLba + arverify::kLeadInFrames);
+    }
+    arToc.leadoutOffset = toc->leadOutLba + arverify::kLeadInFrames;
+    const arverify::DiscIds ids = arverify::computeDiscIds(arToc);
+
+    std::printf("\nMB disc id: %s\n", ids.musicBrainzDiscId.c_str());
+    QNetworkAccessManager nam;
+    const auto releases = musicbrainz::lookupByDiscId(
+        nam, ids.musicBrainzDiscId, static_cast<int>(toc->tracks.size()));
+    const musicbrainz::Release* chosen = nullptr;
+    if (!releases.empty()) {
+        chosen = &releases.front();
+        std::printf("MB release: %s — %s%s%s  (disc %d of %d)\n",
+                    chosen->artist.c_str(), chosen->title.c_str(),
+                    chosen->date.empty() ? "" : "  ",
+                    chosen->date.c_str(),
+                    chosen->disc.position, chosen->disc.totalCount);
+    } else {
+        std::printf("MB: no match — encoding without tags\n");
+    }
+
+    // Drive-offset lookup. nullopt -> rip at offset 0 and let the verifier
+    // scan it out post-hoc, same as the no-offset case.
+    const auto offsetOpt = plyr::cd::lookupDriveOffset(d.vendor, d.product);
+    const int  offset    = offsetOpt.value_or(0);
+    if (offsetOpt) {
+        std::printf("drive offset: %+d samples (from drive DB)\n", offset);
+    } else {
+        std::printf("drive offset: unknown for %s / %s — ripping at 0\n",
+                    d.vendor.c_str(), d.product.c_str());
+    }
+
+    // Pad sectors at each edge so the slicing window can shift up to
+    // |offset| frames either direction. ceil(|offset|/588) covers the
+    // shift itself; +1 leaves one extra sector of headroom (cheap; the
+    // largest offsets in the AR DB are ~1700 samples, ~3 sectors).
+    const uint32_t padSectors    = static_cast<uint32_t>(
+        (std::abs(offset) + 587) / 588) + 1;
+    const uint32_t paddedSectors = totalSectors + 2 * padSectors;
+    const uint64_t paddedBytes   = uint64_t{paddedSectors} * 2352;
+    const uint64_t mainStart     = uint64_t{padSectors} * 2352;
+
+    std::printf("\nallocating %.1f MiB  (natural %u sectors + %u pad at each edge)\n",
+                static_cast<double>(paddedBytes) / (1024.0 * 1024.0),
+                totalSectors, padSectors);
+    std::vector<uint8_t> disc(paddedBytes);  // zero-initialized = pre/post pad default
 
     std::printf("reading %u sectors  (LBA %d .. %d)\n",
                 totalSectors, firstLba, firstLba + int(totalSectors));
@@ -310,13 +405,13 @@ static int runRip(const char* outDir) {
     constexpr uint32_t kChunk = 27;
     uint32_t remaining  = totalSectors;
     int32_t  lba        = firstLba;
-    uint64_t bytesRead  = 0;
+    uint64_t writeAt    = mainStart;
     uint32_t readSoFar  = 0;
     uint32_t nextReport = std::max<uint32_t>(totalSectors / 10, 1);
 
     while (remaining > 0) {
         const uint32_t n = std::min(remaining, kChunk);
-        std::span<uint8_t> view(disc.data() + bytesRead, uint64_t{n} * 2352);
+        std::span<uint8_t> view(disc.data() + writeAt, uint64_t{n} * 2352);
         const auto r = dev->readSectors(lba, n, view, /*wantC2=*/false);
         if (r.status != plyr::cd::ReadStatus::Ok) {
             std::fprintf(stderr, "\nread failed at LBA %d: %s\n",
@@ -328,7 +423,7 @@ static int runRip(const char* outDir) {
                          lba, n, r.sectorsRead);
             return EXIT_FAILURE;
         }
-        bytesRead += uint64_t{r.sectorsRead} * 2352;
+        writeAt   += uint64_t{r.sectorsRead} * 2352;
         remaining -= r.sectorsRead;
         lba       += static_cast<int32_t>(r.sectorsRead);
         readSoFar += r.sectorsRead;
@@ -340,7 +435,31 @@ static int runRip(const char* outDir) {
         }
     }
 
-    std::printf("\nencoding %zu tracks -> %s\n", toc->tracks.size(), outDir);
+    // Lead-out probe: try to read `padSectors` past the TOC's leadOutLba
+    // into the post-pad region. Most drives let you read a few sectors of
+    // lead-out runout (silence on commercial audio CDs); some bounce with
+    // OutOfRange. Either way it's just padding from the encoder's POV.
+    if (padSectors > 0) {
+        std::span<uint8_t> tail(
+            disc.data() + mainStart + uint64_t{totalSectors} * 2352,
+            uint64_t{padSectors} * 2352);
+        const auto rt = dev->readSectors(
+            static_cast<int32_t>(toc->leadOutLba), padSectors, tail, false);
+        if (rt.status != plyr::cd::ReadStatus::Ok) {
+            std::printf("(lead-out probe failed, %u pad sectors stay zero-filled: %s)\n",
+                        padSectors, dev->lastDeviceError().c_str());
+        }
+        // Lead-in (negative LBA) reads aren't supported yet — pre-pad
+        // stays zero-filled. Within AR's first-5-sector skip region for
+        // typical drive offsets, so the verifier doesn't see it.
+    }
+
+    // Slice each track at canonical-aligned byte boundaries. Canonical
+    // sample 0 of the disc lives at byte `mainStart + offset*4` in the
+    // padded buffer (negative offset shifts back into pre-pad zone,
+    // positive offset shifts forward into main / post-pad).
+    std::printf("\nencoding %zu tracks -> %s  (offset %+d applied)\n",
+                toc->tracks.size(), outDir, offset);
     for (size_t i = 0; i < toc->tracks.size(); ++i) {
         const auto&    t        = toc->tracks[i];
         const uint32_t nextLba  = (i + 1 < toc->tracks.size())
@@ -348,16 +467,26 @@ static int runRip(const char* outDir) {
                                     : toc->leadOutLba;
         const uint32_t startSec = t.startLba - toc->tracks.front().startLba;
         const uint64_t frames   = uint64_t{nextLba - t.startLba} * 588;
+        const int64_t  byteIdx  = static_cast<int64_t>(mainStart)
+                                  + int64_t{startSec} * 2352
+                                  + int64_t{offset} * 4;
         // CDDA raw bytes are interleaved 16-bit LE stereo — already the
         // exact layout flacencode wants on this little-endian host.
         const int16_t* pcm = reinterpret_cast<const int16_t*>(
-            disc.data() + uint64_t{startSec} * 2352);
+            disc.data() + byteIdx);
 
         char filename[64];
         std::snprintf(filename, sizeof(filename),
                       "track_%02u.flac", t.trackNumber);
         const std::string outPath = std::string(outDir) + "/" + filename;
-        if (!flacencode::encodeCdAudioToFile(outPath, pcm, frames)) {
+
+        std::vector<flacencode::VorbisTag> tags;
+        if (chosen) {
+            tags = tagsForTrack(*chosen, static_cast<int>(i),
+                                ids.musicBrainzDiscId);
+        }
+        if (!flacencode::encodeCdAudioToFile(
+                outPath, pcm, frames, flacencode::EncoderConfig{}, tags)) {
             std::fprintf(stderr, "encode failed for track %u\n", t.trackNumber);
             return EXIT_FAILURE;
         }
@@ -371,6 +500,14 @@ static int runRip(const char* outDir) {
 }
 
 int main(int argc, char** argv) {
+    // QCoreApplication is needed for the MusicBrainz lookup's nested
+    // event loop (--rip). Cheap for the other modes; CFRunLoopRun in
+    // --shield is compatible — Qt and CoreFoundation share the same
+    // main run loop on macOS.
+    QCoreApplication app(argc, argv);
+    QCoreApplication::setApplicationName("cdrip_cli");
+    QCoreApplication::setOrganizationName("Concerto");
+
     for (int i = 1; i < argc; ++i) {
         if (std::strcmp(argv[i], "--shield") == 0) return runShield();
         if (std::strcmp(argv[i], "--toc")    == 0) return runReadToc();
