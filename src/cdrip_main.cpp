@@ -39,6 +39,7 @@
 
 #include <algorithm>
 #include <cerrno>
+#include <chrono>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -352,6 +353,152 @@ static std::vector<flacencode::VorbisTag> tagsForTrack(
     return tags;
 }
 
+// Classify a TOC by track types — drives the "we can't rip this" message.
+enum class DiscKind {
+    PureAudio,   // every track is CDDA — proceed
+    MixedMode,   // some data, some audio
+    PureData,    // every track is data
+    Empty,       // no tracks (shouldn't happen)
+};
+
+static DiscKind classifyDisc(const plyr::cd::Toc& toc) {
+    if (toc.tracks.empty()) return DiscKind::Empty;
+    bool hasAudio = false, hasData = false;
+    for (const auto& t : toc.tracks) {
+        if (t.isData) hasData = true;
+        else          hasAudio = true;
+    }
+    if (hasAudio && hasData) return DiscKind::MixedMode;
+    if (hasData)             return DiscKind::PureData;
+    return DiscKind::PureAudio;
+}
+
+// CUE doesn't have an escape sequence for the double-quote inside a
+// double-quoted string. The widely-tolerated substitution is a single
+// quote / apostrophe; pretty much every CUE parser accepts that form
+// even if the original title had ".
+static std::string cueQuote(const std::string& s) {
+    std::string out = s;
+    std::replace(out.begin(), out.end(), '"', '\'');
+    return out;
+}
+
+static void writeCueSheet(const std::string& outDir,
+                          const plyr::cd::Toc& toc,
+                          const musicbrainz::Release* mb) {
+    const std::string path = outDir + "/cd_rip.cue";
+    std::FILE* f = std::fopen(path.c_str(), "w");
+    if (!f) return;
+    if (mb) {
+        if (!mb->artist.empty())
+            std::fprintf(f, "PERFORMER \"%s\"\n", cueQuote(mb->artist).c_str());
+        if (!mb->title.empty())
+            std::fprintf(f, "TITLE \"%s\"\n", cueQuote(mb->title).c_str());
+    }
+    for (size_t i = 0; i < toc.tracks.size(); ++i) {
+        const auto& t = toc.tracks[i];
+        char filename[64];
+        std::snprintf(filename, sizeof(filename),
+                      "track_%02u.flac", t.trackNumber);
+        std::fprintf(f, "FILE \"%s\" WAVE\n", filename);
+        std::fprintf(f, "  TRACK %02u AUDIO\n", t.trackNumber);
+        if (mb && i < mb->disc.tracks.size()) {
+            if (!mb->disc.tracks[i].title.empty()) {
+                std::fprintf(f, "    TITLE \"%s\"\n",
+                             cueQuote(mb->disc.tracks[i].title).c_str());
+            }
+            if (!mb->artist.empty()) {
+                std::fprintf(f, "    PERFORMER \"%s\"\n",
+                             cueQuote(mb->artist).c_str());
+            }
+        }
+        // Per-track FLACs each start at MSF 00:00:00; the disc's actual
+        // pregap layout lives in the TOC itself (cd_rip.log).
+        std::fprintf(f, "    INDEX 01 00:00:00\n");
+    }
+    std::fclose(f);
+}
+
+static void writeRipLog(const std::string& outDir,
+                        const plyr::cd::DriveInfo& drive,
+                        const plyr::cd::Toc& toc,
+                        const arverify::DiscIds& ids,
+                        int offset, bool offsetFromDb,
+                        const musicbrainz::Release* mb,
+                        const std::vector<ZeroFilledRange>& zeroFilled,
+                        double elapsedSec) {
+    const std::string path = outDir + "/cd_rip.log";
+    std::FILE* f = std::fopen(path.c_str(), "w");
+    if (!f) return;
+
+    std::fprintf(f, "cdrip_cli  —  Concerto CD rip log\n\n");
+
+    std::fprintf(f, "Drive:        %s / %s  rev %s  (/dev/%s)\n",
+                 drive.vendor.empty()   ? "?" : drive.vendor.c_str(),
+                 drive.product.empty()  ? "?" : drive.product.c_str(),
+                 drive.revision.empty() ? "?" : drive.revision.c_str(),
+                 drive.id.c_str());
+    std::fprintf(f, "Drive offset: %+d samples  (%s)\n\n",
+                 offset, offsetFromDb
+                     ? "from bundled AccurateRip DB"
+                     : "fallback 0 — drive not in DB, verifier will scan");
+
+    std::fprintf(f, "Disc IDs:\n");
+    std::fprintf(f, "  AccurateRip   id1=%08x  id2=%08x\n",
+                 ids.accurateRipId1, ids.accurateRipId2);
+    std::fprintf(f, "  CDDB          %08x\n", ids.cddbId);
+    std::fprintf(f, "  MusicBrainz   %s\n\n", ids.musicBrainzDiscId.c_str());
+
+    if (mb) {
+        std::fprintf(f, "MusicBrainz match:\n");
+        std::fprintf(f, "  Artist:  %s\n", mb->artist.c_str());
+        std::fprintf(f, "  Album:   %s\n", mb->title.c_str());
+        if (!mb->date.empty())
+            std::fprintf(f, "  Date:    %s\n", mb->date.c_str());
+        if (!mb->country.empty())
+            std::fprintf(f, "  Country: %s\n", mb->country.c_str());
+        std::fprintf(f, "  Disc:    %d of %d\n",
+                     mb->disc.position, mb->disc.totalCount);
+        std::fprintf(f, "  Release: %s\n\n", mb->id.c_str());
+    } else {
+        std::fprintf(f, "MusicBrainz: no match\n\n");
+    }
+
+    std::fprintf(f, "Table of contents:\n");
+    for (const auto& t : toc.tracks) {
+        const uint32_t abs = t.startLba + 150;
+        std::fprintf(f, "  track %2u  LBA %7u  MSF %02u:%02u.%02u  %s%s\n",
+                     t.trackNumber, t.startLba,
+                     abs / (75 * 60), (abs / 75) % 60, abs % 75,
+                     t.isData ? "DATA" : "AUDIO",
+                     t.preEmphasis ? "  +preemphasis" : "");
+    }
+    {
+        const uint32_t abs = toc.leadOutLba + 150;
+        std::fprintf(f, "  lead-out  LBA %7u  MSF %02u:%02u.%02u\n\n",
+                     toc.leadOutLba,
+                     abs / (75 * 60), (abs / 75) % 60, abs % 75);
+    }
+
+    if (zeroFilled.empty()) {
+        std::fprintf(f, "Read errors: none.\n");
+    } else {
+        std::fprintf(f, "Read errors (%zu range(s) zero-filled):\n",
+                     zeroFilled.size());
+        uint32_t total = 0;
+        for (const auto& z : zeroFilled) {
+            std::fprintf(f, "  LBA %d..%d  (%u sectors)\n",
+                         z.lba, z.lba + int(z.sectors), z.sectors);
+            total += z.sectors;
+        }
+        std::fprintf(f, "  %u sectors total — AR/CTDB will flag any affected tracks\n",
+                     total);
+    }
+
+    std::fprintf(f, "\nElapsed: %.1f s\n", elapsedSec);
+    std::fclose(f);
+}
+
 // Full disc rip with drive-offset correction. Read range is widened by
 // `padSectors` at each disc edge so the slicing window can shift up to
 // |offset| sample frames in either direction; failed pad reads (lead-in
@@ -360,6 +507,8 @@ static std::vector<flacencode::VorbisTag> tagsForTrack(
 // skip 5 sectors at the disc edges, so a few frames of zero-padding
 // inside that region are invisible to the AR check.
 static int runRip(const char* outDir) {
+    const auto t0 = std::chrono::steady_clock::now();
+
     namespace fs = std::filesystem;
     std::error_code ec;
     fs::create_directories(outDir, ec);
@@ -388,17 +537,35 @@ static int runRip(const char* outDir) {
     }
 
     const auto toc = dev->readToc();
-    if (!toc || toc->tracks.empty()) {
+    if (!toc) {
         std::fprintf(stderr, "readToc: %s\n", dev->lastDeviceError().c_str());
         return EXIT_FAILURE;
     }
-    for (const auto& t : toc->tracks) {
-        if (t.isData) {
+    switch (classifyDisc(*toc)) {
+        case DiscKind::PureAudio:
+            break;  // proceed
+        case DiscKind::MixedMode: {
             std::fprintf(stderr,
-                "track %u is a data track — v1 rips audio-only CDs.\n",
-                t.trackNumber);
+                "this is a mixed-mode CD (data + audio tracks):\n");
+            for (const auto& t : toc->tracks) {
+                std::fprintf(stderr, "  track %2u: %s\n",
+                             t.trackNumber, t.isData ? "DATA" : "AUDIO");
+            }
+            std::fprintf(stderr,
+                "cdrip_cli v1 supports audio-only CDs. Mixed-mode is out of scope —\n"
+                "the data partition would auto-mount via DiskArbitration and the\n"
+                "boundaries of the audio region need handling we haven't built yet.\n");
             return EXIT_FAILURE;
         }
+        case DiscKind::PureData:
+            std::fprintf(stderr,
+                "this appears to be a pure data CD (no CDDA tracks).\n"
+                "cdrip_cli rips audio CDs only — open the data CD in Finder.\n");
+            return EXIT_FAILURE;
+        case DiscKind::Empty:
+            std::fprintf(stderr,
+                "readToc returned an empty TOC — disc not finalized? unsupported?\n");
+            return EXIT_FAILURE;
     }
 
     const int32_t  firstLba     = static_cast<int32_t>(toc->tracks.front().startLba);
@@ -580,7 +747,19 @@ static int runRip(const char* outDir) {
                           / static_cast<double>(totalSectors));
     }
 
-    std::printf("\nrip complete. verify with:\n  arverify_cli %s\n", outDir);
+    // Write sidecars — cd_rip.log captures everything that just went to
+    // stdout in archival form; cd_rip.cue lets a future tool reconstruct
+    // the disc layout for re-burn or playback against the per-track FLACs.
+    const double elapsedSec =
+        std::chrono::duration<double>(
+            std::chrono::steady_clock::now() - t0).count();
+    writeRipLog(outDir, d, *toc, ids, offset, offsetOpt.has_value(),
+                chosen, zeroFilled, elapsedSec);
+    writeCueSheet(outDir, *toc, chosen);
+
+    std::printf("\nrip complete in %.1f s.  sidecars: cd_rip.log, cd_rip.cue\n"
+                "verify with:\n  arverify_cli %s\n",
+                elapsedSec, outDir);
     return EXIT_SUCCESS;
 }
 
