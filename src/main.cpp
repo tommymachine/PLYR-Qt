@@ -1,6 +1,8 @@
 #include "AudioEngine.h"
+#include "CdShield.h"
 #include "EqController.h"
 #include "FftProcessor.h"
+#include "MusicBlocker.h"
 #include "PlaylistModel.h"
 #include "SystemPaths.h"
 #include "macos_prewarm.h"
@@ -26,6 +28,18 @@ int main(int argc, char *argv[])
     // the main-thread stall drains Qt's audio ring buffer and skips.
     // See docs/AUDIO_THREADING.md for the full explanation.
     prewarmOpenPanel();
+
+    // CD-ripping QoL: while Concerto is open, intercept audio-CD
+    // insertion events before Music.app's auto-launch handler can react.
+    // CdShield DA-claims any audio-bearing IOCDMedia (data CDs fall
+    // through to Finder); MusicBlocker is a secondary observer that
+    // force-terminates Music/iTunes if anything still manages to fresh-
+    // launch them. Both no-op on iOS / non-Apple. Stack lifetime — they
+    // stop() in their destructors after app.exec() returns.
+    plyr::MusicBlocker musicBlocker;
+    musicBlocker.start();
+    plyr::cd::CdShield cdShield;
+    cdShield.start();
 
     PlaylistModel playlist;
     FftProcessor  fft;
