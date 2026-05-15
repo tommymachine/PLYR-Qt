@@ -255,6 +255,51 @@ static int runReadAll(uint32_t cap) {
     return samplesRead == expectedSamples ? EXIT_SUCCESS : EXIT_FAILURE;
 }
 
+// One row in the rip log's "had to zero-fill" summary.
+struct ZeroFilledRange {
+    int32_t  lba;
+    uint32_t sectors;
+};
+
+// Read `count` sectors at `lba` with up to `kMaxRetries` re-attempts on
+// transient errors (EIO / EBUSY). Non-retriable failures (out-of-range,
+// abort, fatal device) return immediately. After the retry budget is
+// exhausted the caller's buffer is zero-filled and `outZeroFilled` is
+// written so the caller can record the range and keep going — same
+// strategy cdparanoia / EAC use for "unrecoverable" sectors. AR's first/
+// last 5-sector skip windows + the disc-wide AR/CTDB cross-check are
+// the actual safety nets.
+static bool readWithRetry(plyr::cd::CdDevice& dev,
+                          int32_t lba, uint32_t count,
+                          std::span<uint8_t> buf,
+                          bool& outZeroFilled,
+                          std::string& outLastError) {
+    constexpr int kMaxRetries = 2;
+    plyr::cd::ReadResult r;
+    for (int attempt = 0; attempt <= kMaxRetries; ++attempt) {
+        r = dev.readSectors(lba, count, buf, /*wantC2=*/false);
+        if (r.status == plyr::cd::ReadStatus::Ok && r.sectorsRead == count) {
+            outZeroFilled = false;
+            if (attempt > 0) {
+                std::printf("  recovered LBA %d (+%u) on retry %d\n",
+                            lba, count, attempt);
+                std::fflush(stdout);
+            }
+            return true;
+        }
+        // Non-transient — no point hammering.
+        if (r.status == plyr::cd::ReadStatus::OutOfRange
+            || r.status == plyr::cd::ReadStatus::FatalDeviceError
+            || r.status == plyr::cd::ReadStatus::Aborted) {
+            break;
+        }
+    }
+    outLastError    = dev.lastDeviceError();
+    outZeroFilled   = true;
+    std::memset(buf.data(), 0, buf.size());
+    return false;
+}
+
 // Derive a Vorbis-comment set for one track from a chosen MusicBrainz
 // release + the disc's MB ID. Same fields rip_cd.sh wrote: TITLE,
 // ARTIST, ALBUM, ALBUMARTIST, DATE, TRACKNUMBER, TRACKTOTAL,
@@ -409,24 +454,31 @@ static int runRip(const char* outDir) {
     uint32_t readSoFar  = 0;
     uint32_t nextReport = std::max<uint32_t>(totalSectors / 10, 1);
 
+    std::vector<ZeroFilledRange> zeroFilled;
+    std::string lastReadError;
+
     while (remaining > 0) {
         const uint32_t n = std::min(remaining, kChunk);
         std::span<uint8_t> view(disc.data() + writeAt, uint64_t{n} * 2352);
-        const auto r = dev->readSectors(lba, n, view, /*wantC2=*/false);
-        if (r.status != plyr::cd::ReadStatus::Ok) {
-            std::fprintf(stderr, "\nread failed at LBA %d: %s\n",
-                         lba, dev->lastDeviceError().c_str());
+        bool wasZeroFilled = false;
+        const bool ok = readWithRetry(*dev, lba, n, view,
+                                      wasZeroFilled, lastReadError);
+        if (!ok && !wasZeroFilled) {
+            std::fprintf(stderr,
+                "\nunrecoverable read at LBA %d (%u sectors): %s\n",
+                lba, n, lastReadError.c_str());
             return EXIT_FAILURE;
         }
-        if (r.sectorsRead != n) {
-            std::fprintf(stderr, "\nshort read at LBA %d: asked %u got %u\n",
-                         lba, n, r.sectorsRead);
-            return EXIT_FAILURE;
+        if (wasZeroFilled) {
+            zeroFilled.push_back({lba, n});
+            std::printf("  WARN: zero-filled LBA %d..%d (%s)\n",
+                        lba, lba + int(n), lastReadError.c_str());
+            std::fflush(stdout);
         }
-        writeAt   += uint64_t{r.sectorsRead} * 2352;
-        remaining -= r.sectorsRead;
-        lba       += static_cast<int32_t>(r.sectorsRead);
-        readSoFar += r.sectorsRead;
+        writeAt   += uint64_t{n} * 2352;
+        remaining -= n;
+        lba       += static_cast<int32_t>(n);
+        readSoFar += n;
         if (readSoFar >= nextReport) {
             std::printf("  %3u%%  LBA %d\n",
                         readSoFar * 100u / totalSectors, lba);
@@ -437,17 +489,22 @@ static int runRip(const char* outDir) {
 
     // Lead-out probe: try to read `padSectors` past the TOC's leadOutLba
     // into the post-pad region. Most drives let you read a few sectors of
-    // lead-out runout (silence on commercial audio CDs); some bounce with
-    // OutOfRange. Either way it's just padding from the encoder's POV.
+    // lead-out runout (silence on commercial audio CDs); some return
+    // EIO / OutOfRange. Failure is benign — the pre-pad / post-pad
+    // regions fall inside AR's 5-sector skip windows at typical offsets.
+    // Same retry+zero-fill path as the main loop, so the rip log records
+    // the lead-out as a known bad range too.
     if (padSectors > 0) {
         std::span<uint8_t> tail(
             disc.data() + mainStart + uint64_t{totalSectors} * 2352,
             uint64_t{padSectors} * 2352);
-        const auto rt = dev->readSectors(
-            static_cast<int32_t>(toc->leadOutLba), padSectors, tail, false);
-        if (rt.status != plyr::cd::ReadStatus::Ok) {
-            std::printf("(lead-out probe failed, %u pad sectors stay zero-filled: %s)\n",
-                        padSectors, dev->lastDeviceError().c_str());
+        bool wasZeroFilled = false;
+        std::string err;
+        readWithRetry(*dev, static_cast<int32_t>(toc->leadOutLba),
+                      padSectors, tail, wasZeroFilled, err);
+        if (wasZeroFilled) {
+            std::printf("(lead-out probe: %u pad sectors zero-filled: %s)\n",
+                        padSectors, err.c_str());
         }
         // Lead-in (negative LBA) reads aren't supported yet — pre-pad
         // stays zero-filled. Within AR's first-5-sector skip region for
@@ -493,6 +550,21 @@ static int runRip(const char* outDir) {
         std::printf("  track %2u  %5u sectors  %9llu frames  ->  %s\n",
                     t.trackNumber, nextLba - t.startLba,
                     static_cast<unsigned long long>(frames), filename);
+    }
+
+    if (!zeroFilled.empty()) {
+        std::printf("\nWARNING: %zu read range(s) zero-filled inside the audio body:\n",
+                    zeroFilled.size());
+        uint32_t totalZero = 0;
+        for (const auto& z : zeroFilled) {
+            std::printf("  LBA %d .. %d  (%u sectors)\n",
+                        z.lba, z.lba + int(z.sectors), z.sectors);
+            totalZero += z.sectors;
+        }
+        std::printf("  %u sectors total (%.4f%% of disc) — AR/CTDB will surface any track that lands on these\n",
+                    totalZero,
+                    100.0 * static_cast<double>(totalZero)
+                          / static_cast<double>(totalSectors));
     }
 
     std::printf("\nrip complete. verify with:\n  arverify_cli %s\n", outDir);
