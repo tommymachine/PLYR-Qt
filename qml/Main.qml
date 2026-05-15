@@ -120,6 +120,49 @@ ApplicationWindow {
         }
     }
 
+    // CD-rip view. Non-modal so disc 1 of a batch can play back while
+    // disc 2 is reading. `playlist.recentFolders` doubles as a sensible
+    // initial location for the "Save to…" picker at the end of a rip.
+    RipView {
+        id: ripView
+        x: (root.width  - width)  / 2
+        y: (root.height - height) / 2
+        width:  Math.min(root.width  - 60, 880)
+        height: Math.min(root.height - 60, 600)
+        saveRecents: playlist.recentFolders
+    }
+
+    // Open the rip view. Re-queries volumes per open so newly mounted /
+    // ejected drives are accurate inside the save picker.
+    function openRipView() {
+        ripView.saveVolumes = systemPaths.mountedVolumes()
+        ripper.startSession()
+        ripView.open()
+    }
+
+    function togglePlayPause() {
+        if (!playlist.hasCurrent) return
+        if (root.isPlaying) audio.pause()
+        else audio.play()
+    }
+
+    // Space / Return / Enter = play-pause toggle, the universal music-app
+    // shortcut. ApplicationShortcut context so it fires regardless of
+    // which item currently holds keyboard focus (the default
+    // WindowShortcut needs an item in the window to have focus, which
+    // isn't guaranteed at startup). Gated while any popup is open so
+    // those keys remain free for the popup itself.
+    Shortcut {
+        sequences: ["Space", "Return", "Enter"]
+        context: Qt.ApplicationShortcut
+        enabled: !folderDialog.opened && !ripView.opened && !eqPopup.opened
+        onActivated: {
+            console.log("[shortcut] play/pause fired; hasCurrent="
+                        + playlist.hasCurrent + " playing=" + root.isPlaying)
+            root.togglePlayPause()
+        }
+    }
+
     // EQ overlay. Modal popup with backdrop dismiss; the panel itself is
     // EqPanel.qml and gets its data from the `eq` context property.
     Popup {
@@ -377,6 +420,81 @@ ApplicationWindow {
                         implicitWidth: 22
                         padding: 4
                         onClicked: recentsMenu.popup(recentsChevron, 0, recentsChevron.height)
+                    }
+                }
+
+                // Rip CD button. Opens the rip view; the view itself
+                // handles disc detection, identification, and the rest of
+                // the pipeline. While a rip is active and the view is
+                // dismissed, this button is replaced by a progress pill
+                // showing the live state.
+                Button {
+                    id: ripCdBtn
+                    visible: ripper.state === 0 /*Idle*/
+                    text: "💿"
+                    font.pixelSize: 14
+                    Layout.fillHeight: true
+                    Layout.preferredWidth: height
+                    padding: 0
+                    background: Rectangle { color: "transparent" }
+                    onClicked: root.openRipView()
+                    ToolTip.text: "Rip a CD"
+                    ToolTip.visible: hovered
+                    ToolTip.delay: 600
+                }
+
+                // Header pill — visible only when a rip is in progress
+                // AND the rip view is dismissed. Click reopens the view.
+                Rectangle {
+                    visible: ripper.state !== 0 /*Idle*/
+                             && !ripView.opened
+                    Layout.preferredHeight: 26
+                    Layout.preferredWidth: pillRow.implicitWidth + 22
+                    radius: 13
+                    color: Qt.rgba(0.05, 0.10, 0.20, 1.0)
+                    border.color: Qt.rgba(0.55, 0.82, 1.00, 0.30)
+                    border.width: 1
+
+                    MouseArea {
+                        anchors.fill: parent
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: ripView.open()
+                    }
+
+                    RowLayout {
+                        id: pillRow
+                        anchors.centerIn: parent
+                        spacing: 8
+                        Text {
+                            text: "💿"
+                            font.pixelSize: 12
+                        }
+                        Text {
+                            text: {
+                                switch (ripper.state) {
+                                case 1: return ripper.inBatch
+                                    ? "Insert disc " + ripper.batchExpectedDisc
+                                      + "/" + ripper.batchTotalCount
+                                    : "Waiting for disc"
+                                case 2: return "Identifying…"
+                                case 3: return "Ripping · "
+                                    + Math.round(ripper.readProgress * 100) + "%"
+                                case 4: return "Encoding · "
+                                    + Math.round(ripper.encodeProgress * 100) + "%"
+                                case 5: return "Verifying · "
+                                    + Math.round(ripper.verifyProgress * 100) + "%"
+                                case 6: return "Ready to save"
+                                case 7: return "Saving…"
+                                case 8: return "Done"
+                                case 9: return "Stopping…"
+                                case 10: return "Failed"
+                                }
+                                return ""
+                            }
+                            color: root.primary
+                            font.pixelSize: 11
+                            font.family: "Menlo"
+                        }
                     }
                 }
 
@@ -770,10 +888,7 @@ ApplicationWindow {
                         flat: true
                         font.pixelSize: 20
                         enabled: playlist.hasCurrent
-                        onClicked: {
-                            if (root.isPlaying) audio.pause()
-                            else audio.play()
-                        }
+                        onClicked: root.togglePlayPause()
                     }
                     Button {
                         text: "⏭"

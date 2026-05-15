@@ -4,6 +4,7 @@
 #include "FftProcessor.h"
 #include "MusicBlocker.h"
 #include "PlaylistModel.h"
+#include "Ripper.h"
 #include "SystemPaths.h"
 #include "macos_prewarm.h"
 
@@ -20,6 +21,7 @@ int main(int argc, char *argv[])
     QGuiApplication app(argc, argv);
 
     QGuiApplication::setApplicationName("Concerto");
+    QGuiApplication::setApplicationVersion("0.1");
     QGuiApplication::setOrganizationName("Thompson");
     QQuickStyle::setStyle("Basic");
 
@@ -145,12 +147,27 @@ int main(int argc, char *argv[])
 
     SystemPaths systemPaths;
 
+    // CD-rip orchestrator. Lives on the GUI thread; the actual disc reads
+    // happen on a worker thread it owns (RipWorker). When a disc is saved
+    // we auto-open it in the playlist and start playback — this is what
+    // makes a 14-disc batch usable: disc 1 plays while disc 2 keeps ripping.
+    plyr::cd::Ripper ripper;
+    QObject::connect(&ripper, &plyr::cd::Ripper::discSaved,
+                     &playlist, [&playlist, &audio](const QString& savedPath) {
+                         playlist.openFolder(savedPath);
+                         if (playlist.count() > 0) {
+                             playlist.setCurrentIndex(0);
+                             audio.play();
+                         }
+                     });
+
     QQmlApplicationEngine engine;
     auto* ctx = engine.rootContext();
     ctx->setContextProperty("playlist",    &playlist);
     ctx->setContextProperty("fft",         &fft);
     ctx->setContextProperty("audio",       &audio);
     ctx->setContextProperty("eq",          &eq);
+    ctx->setContextProperty("ripper",      &ripper);
     ctx->setContextProperty("systemPaths", &systemPaths);
 
     // Pick the phone-portrait layout on iOS/Android, the desktop layout

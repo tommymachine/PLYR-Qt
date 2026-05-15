@@ -84,6 +84,8 @@ qt_add_qml_module(plyr_qt
         qml/EqPresetChip.qml
         qml/EqCurveOverlay.qml
         qml/FolderPicker.qml
+        qml/CdDiscCanvas.qml
+        qml/RipView.qml
     RESOURCES
         resources/images/concerto-logo.png
     SOURCES
@@ -111,6 +113,8 @@ qt_add_qml_module(plyr_qt
         src/macos_prewarm.h
         src/MusicBlocker.h
         src/CdShield.h
+        src/Ripper.cpp
+        src/Ripper.h
 )
 
 # macOS-only platform sources for plyr_qt. AppKit + DiskArbitration get
@@ -297,6 +301,19 @@ qt_add_shaders(plyr_qt "viz_shaders"
     FILES
         shaders/viz.vert
         shaders/viz.frag
+)
+
+# CD disc surface — silver + diffraction-grating iridescence + an
+# orbiting specular highlight. Backs CdDiscCanvas's bottom layer; the
+# Canvas2D overlay on top still draws track boundary circles, sweep
+# line, hub trim, etc.
+qt_add_shaders(plyr_qt "cd_disc_shaders"
+    PRECOMPILE
+    BASE    shaders
+    PREFIX  "/shaders"
+    FILES
+        shaders/cd_disc.vert
+        shaders/cd_disc.frag
 )
 
 set_target_properties(plyr_qt PROPERTIES

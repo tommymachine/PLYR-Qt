@@ -1,0 +1,799 @@
+import QtQuick
+import QtQuick.Controls
+import QtQuick.Layouts
+import Qt.labs.platform as Platform
+
+// The CD rip view. Non-modal Popup so audio (disc 1 already saved + playing)
+// continues to be interactive underneath; the rip continues even when the
+// popup is closed, replaced by a header pill in Main.qml.
+//
+// State-driven layout — the central message, sidebar contents, and bottom
+// bar buttons all switch on ripper.state. The CD canvas is the constant
+// visual anchor across every phase.
+Popup {
+    id: ripView
+
+    // Modal would block audio playback of the already-saved disc 1 in a
+    // multi-disc set. We use a backdrop dim instead, but events fall
+    // through so the user can interact with the player.
+    modal: false
+    focus: true
+    closePolicy: Popup.NoAutoClose   // closing is explicit (X / done)
+    padding: 0
+
+    // Palette pulled in from the parent (Main.qml's root.* properties).
+    property color bg:          "black"
+    property color ocean:       Qt.rgba(0.02, 0.18, 0.45, 1.0)
+    property color sky:         Qt.rgba(0.45, 0.78, 1.00, 1.0)
+    property color accent:      Qt.rgba(0.55, 0.82, 1.00, 1.0)
+    property color primary:     "white"
+    property color muted:       Qt.rgba(1.0, 1.0, 1.0, 0.40)
+    property color veryMuted:   Qt.rgba(1.0, 1.0, 1.0, 0.25)
+    property color subtleLine:  Qt.rgba(1.0, 1.0, 1.0, 0.10)
+
+    // Recents + volumes list passed through to the save picker. Host
+    // (Main.qml) supplies these so they stay reactive.
+    property var saveRecents: []
+    property var saveVolumes: []
+
+    background: Rectangle {
+        color: "black"
+        border.color: ripView.subtleLine
+        border.width: 1
+        radius: 12
+    }
+
+    // Translate the Ripper.State enum into a string the canvas reads.
+    function modeString(s) {
+        switch (s) {
+        case 0: return "idle"
+        case 1: return "waiting"
+        case 2: return "identifying"
+        case 3: return "reading"
+        case 4: return "encoding"
+        case 5: return "verifying"
+        case 6: return "savePending"
+        case 7: return "saving"
+        case 8: return "done"
+        case 9: return "cancelling"
+        case 10: return "failed"
+        }
+        return "idle"
+    }
+
+    // Top-bar title — primary text only (album / state-noun). The
+    // disc-of-disc position is shown separately in muted gray to its
+    // right. Always shows position info (including "1 of 1" for
+    // singles) when a disc is identified.
+    function titleText() {
+        switch (ripper.state) {
+        case 1: return ripper.inBatch
+            ? "Insert next disc"
+            : (ripper.discPresent ? "Audio CD" : "Insert a CD")
+        case 2: return "Identifying disc"
+        case 3:
+        case 4:
+        case 5:
+        case 6:
+        case 7:
+        case 8:
+            return ripper.hasMatch ? ripper.albumTitle
+                 : (ripper.inBatch ? ripper.batchAlbumTitle : "Audio CD")
+        case 9: return "Stopping"
+        case 10: return "Rip failed"
+        }
+        return ""
+    }
+
+    // Position string shown in gray next to the title. Always present
+    // when we know the disc identity — "Disc 2 of 14" for sets, "Disc 1
+    // of 1" for singles.
+    function positionText() {
+        if (ripper.inBatch && ripper.state === 1 /*WaitingForDisc*/) {
+            return "Disc " + ripper.batchExpectedDisc
+                   + " of " + ripper.batchTotalCount
+                   + "  ·  " + ripper.batchAlbumTitle
+        }
+        if (!ripper.discPresent && !ripper.hasMatch) return ""
+        const pos   = ripper.discPosition
+        const total = Math.max(ripper.discTotalCount, 1)
+        return "Disc " + pos + " of " + total
+    }
+
+    function statusLine() {
+        switch (ripper.state) {
+        case 1:  // WaitingForDisc — the big "Insert CD to rip" panel
+            return ""        // on the right is the only prompt now
+        case 2:  // Identifying
+            return "Reading TOC · looking up MusicBrainz · checking drive offset"
+        case 3: {  // Reading
+            const pct = Math.round(ripper.readProgress * 100)
+            const mins = Math.floor(ripper.etaSec / 60)
+            const secs = ripper.etaSec % 60
+            const eta = mins + "m " + (secs < 10 ? "0" : "") + secs + "s remaining"
+            return pct + "%  ·  "
+                 + Math.round(ripper.currentSpeedSecPerSec) + " sec/s · "
+                 + ripper.currentMultiplier.toFixed(1) + "×  ·  "
+                 + eta
+        }
+        case 4:
+            return "Encoding " + Math.round(ripper.encodeProgress * 100) + "%"
+        case 5:
+            return "Verifying " + Math.round(ripper.verifyProgress * 100) + "%"
+        case 6:
+            return ripper.verifySummary
+        case 7:
+            return "Moving tracks into place…"
+        case 8:
+            return "Tracks saved and playing now."
+        case 9:
+            return "Cancelling — discarding the in-progress disc."
+        case 10:
+            return ripper.errorMessage
+        }
+        return ""
+    }
+
+    function fmtTime(s) {
+        if (!isFinite(s) || s < 0) return "0:00"
+        const m = Math.floor(s / 60)
+        const r = Math.floor(s) % 60
+        return m + ":" + (r < 10 ? "0" : "") + r
+    }
+
+    // Keyboard navigation for stub/design review:
+    //   ← / →    step backward / forward through demo stages
+    //   space    toggle auto-advance timer
+    // Scoped to the rip view via `enabled: ripView.opened`. Will come
+    // out with the stub when RipWorker lands.
+    Shortcut {
+        sequence: "Left"
+        enabled: ripView.opened
+        onActivated: ripper.demoStep(-1)
+    }
+    Shortcut {
+        sequence: "Right"
+        enabled: ripView.opened
+        onActivated: ripper.demoStep(+1)
+    }
+    Shortcut {
+        sequence: "Space"
+        enabled: ripView.opened
+        onActivated: ripper.demoToggleAutoAdvance()
+    }
+
+    // Auto-open the save picker once the rip enters SavePending. Guarded
+    // by _savePickerArmed so re-entering the state (e.g. user cancelled
+    // the picker and stepped back-then-forward) doesn't fire it twice on
+    // the same entry — the Save button stays visible for that re-trigger
+    // path.
+    property bool _savePickerArmed: false
+    Connections {
+        target: ripper
+        function onStateChanged() {
+            if (ripper.state === 6 /*SavePending*/ && !ripView._savePickerArmed) {
+                ripView._savePickerArmed = true
+                savePicker.volumes = ripView.saveVolumes
+                const initial = Platform.StandardPaths.writableLocation(
+                    Platform.StandardPaths.MusicLocation)
+                savePicker.openAt(initial)
+            } else if (ripper.state !== 6) {
+                ripView._savePickerArmed = false
+            }
+        }
+    }
+
+    contentItem: Item {
+
+        // ---- Top bar: close + title ----
+        Rectangle {
+            id: topBar
+            anchors.top: parent.top
+            anchors.left: parent.left
+            anchors.right: parent.right
+            height: 44
+            color: "transparent"
+
+            // macOS-style close stoplight, top-left. Behavior:
+            //   * during a read/encode/verify -> confirm stop (Resume later
+            //     vs Delete batch) via the confirmDialog.
+            //   * in WaitingForDisc / Done -> just close the popup.
+            Rectangle {
+                id: closeBtn
+                width: 12; height: 12; radius: 6
+                anchors.left: parent.left
+                anchors.leftMargin: 14
+                anchors.verticalCenter: parent.verticalCenter
+                color: closeMouse.pressed ? "#BF4942" : "#ED6A5F"
+                border.color: "#E24B41"
+                border.width: 1
+                antialiasing: true
+
+                MouseArea {
+                    id: closeMouse
+                    anchors.fill: parent
+                    hoverEnabled: true
+                    cursorShape: Qt.PointingHandCursor
+                    onClicked: ripView.requestClose()
+                }
+
+                Item {
+                    anchors.centerIn: parent
+                    width: 8; height: 8
+                    visible: closeMouse.containsMouse
+                    Rectangle {
+                        anchors.centerIn: parent
+                        width: parent.width; height: 1.5
+                        color: "#B30000"; rotation: 45
+                        antialiasing: true
+                    }
+                    Rectangle {
+                        anchors.centerIn: parent
+                        width: parent.width; height: 1.5
+                        color: "#B30000"; rotation: -45
+                        antialiasing: true
+                    }
+                }
+            }
+
+            // SCANCERTO wordmark — the rip flow's sub-brand, sits to
+            // the left of the disc title in muted gray so it reads as a
+            // section header rather than competing with the album name.
+            Text {
+                id: scancertoMark
+                anchors.left: closeBtn.right
+                anchors.leftMargin: 16
+                anchors.verticalCenter: parent.verticalCenter
+                text: "SCANCERTO"
+                color: ripView.muted
+                font.pixelSize: 12
+                font.bold: true
+                font.letterSpacing: 1.2
+            }
+
+            Row {
+                anchors.left: scancertoMark.right
+                anchors.leftMargin: 14
+                anchors.right: stepIndicator.left
+                anchors.rightMargin: 12
+                anchors.verticalCenter: parent.verticalCenter
+                spacing: 12
+                clip: true
+
+                Text {
+                    text: ripView.titleText()
+                    color: ripView.primary
+                    font.pixelSize: 13
+                    font.bold: true
+                    anchors.verticalCenter: parent.verticalCenter
+                    elide: Text.ElideRight
+                }
+                Text {
+                    text: ripView.positionText()
+                    visible: text !== ""
+                    color: ripView.muted
+                    font.pixelSize: 12
+                    anchors.verticalCenter: parent.verticalCenter
+                    elide: Text.ElideRight
+                }
+            }
+
+            // Top-right indicator. Prefers an estimated-time-remaining
+            // readout when we're in the read phase (the long phase that
+            // benefits from one); falls back to the demo-step counter
+            // otherwise. The keyboard-shortcut hint moved out — bare ←
+            // → ⎵ chrome isn't really self-evident anyway, and the dev
+            // path is short. Reference ripper.state in the expression
+            // so the binding re-evaluates on every state change
+            // (demoStepIndex / etaSec are plain invokables / properties).
+            Text {
+                id: stepIndicator
+                anchors.right: parent.right
+                anchors.rightMargin: 14
+                anchors.verticalCenter: parent.verticalCenter
+                text: {
+                    const _ = ripper.state
+                    if (ripper.state === 3 /*Reading*/ && ripper.etaSec > 0) {
+                        const m = Math.floor(ripper.etaSec / 60)
+                        const s = ripper.etaSec % 60
+                        return m + ":" + (s < 10 ? "0" : "") + s + " remaining"
+                    }
+                    return "step " + (ripper.demoStepIndex() + 1)
+                         + "/" + ripper.demoStepCount()
+                }
+                color: ripView.muted
+                font.family: "Menlo"
+                font.pixelSize: 10
+            }
+        }
+
+        Rectangle {
+            id: topDivider
+            anchors.top: topBar.bottom
+            anchors.left: parent.left
+            anchors.right: parent.right
+            height: 1
+            color: ripView.subtleLine
+        }
+
+        // ---- Body: CD canvas on the left, info panel on the right ----
+        RowLayout {
+            anchors.top: topDivider.bottom
+            anchors.left: parent.left
+            anchors.right: parent.right
+            anchors.bottom: parent.bottom
+            anchors.margins: 18
+            spacing: 18
+
+            // Left column — CD canvas + status caption. Fixed width so
+            // the right column's geometry stays constant across stages.
+            ColumnLayout {
+                Layout.alignment: Qt.AlignVCenter
+                Layout.preferredWidth: 380
+                Layout.minimumWidth: 380
+                Layout.maximumWidth: 380
+                spacing: 12
+
+                CdDiscCanvas {
+                    id: disc
+                    // Fixed size so the left column doesn't reflow between
+                    // stages — keeps the disc anchored at the same place
+                    // and the right column at the same width.
+                    Layout.alignment: Qt.AlignHCenter
+                    Layout.preferredWidth:  360
+                    Layout.preferredHeight: 360
+                    Layout.minimumWidth:    360
+                    Layout.minimumHeight:   360
+
+                    mode: ripView.modeString(ripper.state)
+                    readProgress: ripper.readProgress
+                    encodeProgress: ripper.encodeProgress
+                    verifyProgress: ripper.verifyProgress
+                    tracks: ripper.tracks
+                    zeroFilledRanges: ripper.zeroFilledRanges
+                }
+
+                // Fixed-height caption so the column's total height is
+                // constant across states — the disc above stays pegged
+                // at the same vertical position regardless of whether
+                // statusLine() wraps to 1, 2, or 3 lines.
+                Text {
+                    Layout.alignment: Qt.AlignHCenter
+                    Layout.fillWidth: true
+                    Layout.preferredHeight: 36
+                    Layout.minimumHeight: 36
+                    Layout.maximumHeight: 36
+                    text: ripView.statusLine()
+                    color: ripView.muted
+                    font.pixelSize: 11
+                    font.family: "Menlo"
+                    horizontalAlignment: Text.AlignHCenter
+                    verticalAlignment: Text.AlignTop
+                    wrapMode: Text.WordWrap
+                    clip: true
+                }
+            }
+
+            // Right column "insert" placeholder — replaces the data
+            // panel when we're idling at WaitingForDisc with nothing in
+            // the drive. A single big prompt on the right is much more
+            // useful than empty DRIVE / MATCH / OFFSET rows.
+            Item {
+                Layout.fillWidth: true
+                Layout.fillHeight: true
+                Layout.minimumWidth: 280
+                visible: ripper.state === 1 /*WaitingForDisc*/
+                         && !ripper.discPresent
+
+                Text {
+                    anchors.centerIn: parent
+                    horizontalAlignment: Text.AlignHCenter
+                    width: parent.width - 32
+                    text: ripper.inBatch
+                          ? "Insert disc " + ripper.batchExpectedDisc
+                            + " to continue"
+                          : "Insert a CD to rip"
+                    color: ripView.primary
+                    font.pixelSize: 26
+                    font.bold: true
+                    wrapMode: Text.WordWrap
+                }
+            }
+
+            // Right column — info panel (drive, match, offset) above the
+            // track list. Visible from Identifying onward; collapses when
+            // we're at WaitingForDisc with no disc (the placeholder above
+            // takes over).
+            ColumnLayout {
+                Layout.fillWidth: true
+                Layout.fillHeight: true
+                Layout.minimumWidth: 280
+                spacing: 14
+                visible: !(ripper.state === 1 && !ripper.discPresent)
+
+                // ---- DRIVE / MATCH / OFFSET grid ----
+                GridLayout {
+                    Layout.fillWidth: true
+                    columns: 2
+                    columnSpacing: 16
+                    rowSpacing: 10
+
+                    // DRIVE
+                    Text {
+                        text: "DRIVE"
+                        color: ripView.muted
+                        font.family: "Menlo"; font.pixelSize: 9; font.bold: true
+                        Layout.preferredWidth: 64
+                    }
+                    Text {
+                        Layout.fillWidth: true
+                        text: ripper.driveName === ""
+                              ? "— waiting on disc"
+                              : ripper.driveName
+                        color: ripper.driveName === ""
+                               ? ripView.muted : ripView.primary
+                        font.pixelSize: 11
+                        elide: Text.ElideRight
+                    }
+
+                    // MATCH
+                    Text {
+                        text: "MATCH"
+                        color: ripView.muted
+                        font.family: "Menlo"; font.pixelSize: 9; font.bold: true
+                    }
+                    ColumnLayout {
+                        Layout.fillWidth: true
+                        spacing: 2
+                        Text {
+                            Layout.fillWidth: true
+                            text: ripper.hasMatch
+                                  ? ripper.artist + " — " + ripper.albumTitle
+                                  : (ripper.discPresent
+                                     ? "Looking up…"
+                                     : "— no disc")
+                            color: ripper.hasMatch
+                                   ? ripView.primary : ripView.muted
+                            font.pixelSize: 11
+                            elide: Text.ElideRight
+                        }
+                        Text {
+                            Layout.fillWidth: true
+                            visible: ripper.hasMatch
+                            text: {
+                                let s = ripper.date
+                                if (ripper.discTotalCount > 1) {
+                                    if (s.length > 0) s += "  ·  "
+                                    s += "Disc " + ripper.discPosition
+                                       + " of " + ripper.discTotalCount
+                                }
+                                return s
+                            }
+                            color: ripView.muted
+                            font.pixelSize: 10
+                            elide: Text.ElideRight
+                        }
+                    }
+
+                    // OFFSET
+                    Text {
+                        text: "OFFSET"
+                        color: ripView.muted
+                        font.family: "Menlo"; font.pixelSize: 9; font.bold: true
+                    }
+                    ColumnLayout {
+                        Layout.fillWidth: true
+                        spacing: 2
+                        Text {
+                            Layout.fillWidth: true
+                            text: ripper.discPresent
+                                ? (ripper.driveOffsetSamples >= 0 ? "+" : "")
+                                  + ripper.driveOffsetSamples + " samples"
+                                : "—"
+                            color: ripper.discPresent
+                                   ? ripView.primary : ripView.muted
+                            font.pixelSize: 11
+                            font.family: "Menlo"
+                        }
+                        Text {
+                            Layout.fillWidth: true
+                            visible: ripper.discPresent
+                            text: ripper.driveOffsetFromDb
+                                ? "from AccurateRip drive DB"
+                                : "drive not in DB · ripping at 0, verifier scans"
+                            color: ripView.muted
+                            font.pixelSize: 10
+                            elide: Text.ElideRight
+                        }
+                    }
+                }
+
+                Rectangle {
+                    Layout.fillWidth: true
+                    Layout.preferredHeight: 1
+                    color: ripView.subtleLine
+                    visible: ripper.discPresent
+                }
+
+                // ---- Track list (the scrollable part) ----
+                Text {
+                    text: "TRACKS"
+                    color: ripView.muted
+                    font.family: "Menlo"; font.pixelSize: 9; font.bold: true
+                    visible: ripper.discPresent
+                }
+
+                ListView {
+                    id: trackList
+                    Layout.fillWidth: true
+                    Layout.fillHeight: true
+                    clip: true
+                    visible: ripper.discPresent
+                    model: ripper.tracks
+                    spacing: 0
+                    boundsBehavior: Flickable.StopAtBounds
+
+                    // Auto-scroll: when the currently-active track
+                    // changes, smooth-scroll so the row sits in the
+                    // middle of the viewport. Uses the same probe-then-
+                    // animate pattern the main playlist uses (Main.qml).
+                    SmoothedAnimation {
+                        id: trackScroll
+                        target: trackList
+                        property: "contentY"
+                        duration: 220
+                        velocity: -1
+                    }
+                    function centerOnCurrent() {
+                        const n = ripper.currentTrackNumber
+                        if (n <= 0 || count === 0) return
+                        Qt.callLater(function() {
+                            trackScroll.stop()
+                            const oldY = trackList.contentY
+                            trackList.positionViewAtIndex(n - 1, ListView.Center)
+                            const targetY = trackList.contentY
+                            trackList.contentY = oldY
+                            trackScroll.to = targetY
+                            trackScroll.start()
+                        })
+                    }
+                    Connections {
+                        target: ripper
+                        function onProgressChanged() { trackList.centerOnCurrent() }
+                    }
+
+                    delegate: Rectangle {
+                        width: ListView.view.width
+                        height: 26
+                        color: (modelData.number === ripper.currentTrackNumber)
+                                ? Qt.rgba(0.05, 0.10, 0.20, 1.0)
+                                : "transparent"
+
+                        RowLayout {
+                            anchors.fill: parent
+                            anchors.leftMargin: 2
+                            anchors.rightMargin: 4
+                            spacing: 8
+
+                            Text {
+                                Layout.preferredWidth: 22
+                                text: (modelData.number < 10 ? "0" : "")
+                                      + modelData.number
+                                color: (modelData.number === ripper.currentTrackNumber)
+                                       ? ripView.accent : ripView.veryMuted
+                                font.family: "Menlo"; font.pixelSize: 10
+                                horizontalAlignment: Text.AlignRight
+                            }
+                            Text {
+                                Layout.preferredWidth: 16
+                                text: {
+                                    const st = modelData.status || ""
+                                    if (st === "ok")       return "✓"
+                                    if (st === "warn")     return "⚠"
+                                    if (st === "fail")     return "✕"
+                                    if (st === "reading")  return "💿"
+                                    if (st === "encoded")  return "·"
+                                    if (st === "read")     return "·"
+                                    return ""
+                                }
+                                color: {
+                                    const st = modelData.status || ""
+                                    if (st === "ok")   return ripView.accent
+                                    if (st === "warn") return Qt.rgba(1.0, 0.78, 0.30, 0.95)
+                                    if (st === "fail") return Qt.rgba(1.0, 0.45, 0.42, 0.95)
+                                    return ripView.veryMuted
+                                }
+                                font.pixelSize: 11
+                                horizontalAlignment: Text.AlignHCenter
+                            }
+                            Text {
+                                Layout.fillWidth: true
+                                text: modelData.title || "Track " + modelData.number
+                                color: (modelData.number === ripper.currentTrackNumber)
+                                       ? ripView.primary : ripView.muted
+                                font.pixelSize: 11
+                                elide: Text.ElideRight
+                            }
+                            Text {
+                                text: ripView.fmtTime(modelData.durationSec || 0)
+                                color: ripView.veryMuted
+                                font.family: "Menlo"; font.pixelSize: 10
+                            }
+                        }
+                    }
+
+                    ScrollBar.vertical: ScrollBar { }
+                }
+            }
+        }
+
+        // Bottom bar removed — close goes through the top-left
+        // stoplight, save auto-opens at SavePending, eject + batch
+        // navigation will be reachable from elsewhere if needed.
+    }
+
+    // Close-confirmation dialog. Asks Resume later vs Delete batch when
+    // the rip is mid-flight, so the user doesn't accidentally lose their
+    // batch state by clicking the close stoplight.
+    Dialog {
+        id: confirmDialog
+        modal: true
+        parent: Overlay.overlay
+        x: (parent.width  - width)  / 2
+        y: (parent.height - height) / 2
+
+        property bool inBatchAtOpen: false
+
+        title: "Stop ripping?"
+        standardButtons: Dialog.NoButton
+
+        contentItem: ColumnLayout {
+            spacing: 14
+            Text {
+                Layout.preferredWidth: 360
+                Layout.fillWidth: true
+                text: confirmDialog.inBatchAtOpen
+                    ? "The in-progress disc will be discarded. You can resume this batch later from the Rip CD menu."
+                    : "The current disc rip will be discarded."
+                color: "white"
+                wrapMode: Text.WordWrap
+                font.pixelSize: 12
+            }
+            RowLayout {
+                Layout.fillWidth: true
+                spacing: 8
+                Item { Layout.fillWidth: true }
+                Button {
+                    text: "Keep ripping"
+                    onClicked: confirmDialog.close()
+                }
+                Button {
+                    text: "Delete batch"
+                    visible: confirmDialog.inBatchAtOpen
+                    onClicked: {
+                        ripper.stopRip(/*deleteBatch=*/true)
+                        confirmDialog.close()
+                        ripView.close()
+                    }
+                }
+                Button {
+                    text: confirmDialog.inBatchAtOpen
+                          ? "Resume later" : "Stop"
+                    highlighted: true
+                    onClicked: {
+                        ripper.stopRip(/*deleteBatch=*/false)
+                        confirmDialog.close()
+                        ripView.close()
+                    }
+                }
+            }
+        }
+    }
+
+    // Save picker — separate FolderPicker instance so its accepted signal
+    // routes into ripper.saveTo() rather than the playlist (Main.qml's
+    // picker still does the play-a-folder routing).
+    //
+    // Cancelling the picker while in SavePending is unusual (the user
+    // dismissed a dialog asking where to save a freshly-completed rip),
+    // so we surface a follow-up confirmation rather than silently
+    // leaving them stranded with a saveless rip.
+    property bool _saveAccepted: false
+    FolderPicker {
+        id: savePicker
+        parent: Overlay.overlay
+        x: (parent.width  - width)  / 2
+        y: (parent.height - height) / 2
+        width:  Math.min(parent.width  - 80, 720)
+        height: Math.min(parent.height - 80, 520)
+        recents: ripView.saveRecents
+        onAccepted: (url) => {
+            ripView._saveAccepted = true
+            ripper.saveTo(url)
+        }
+        onClosed: {
+            if (!ripView._saveAccepted
+                && ripper.state === 6 /*SavePending*/) {
+                cancelSaveDialog.open()
+            }
+            ripView._saveAccepted = false
+        }
+    }
+
+    // Confirmation shown when the user dismisses the save picker mid-
+    // SavePending. Choices: re-open the save picker, or delete the
+    // freshly-ripped tracks and stop the session.
+    Dialog {
+        id: cancelSaveDialog
+        modal: true
+        parent: Overlay.overlay
+        x: (parent.width  - width)  / 2
+        y: (parent.height - height) / 2
+        title: "Delete this rip?"
+        standardButtons: Dialog.NoButton
+
+        background: Rectangle {
+            color: Qt.rgba(0.08, 0.08, 0.10, 0.98)
+            border.color: ripView.subtleLine
+            border.width: 1
+            radius: 10
+        }
+
+        contentItem: ColumnLayout {
+            spacing: 14
+            Text {
+                Layout.preferredWidth: 380
+                Layout.fillWidth: true
+                text: "The disc is ripped but hasn't been saved. Cancel "
+                    + "and the ripped tracks will be discarded."
+                color: "white"
+                wrapMode: Text.WordWrap
+                font.pixelSize: 12
+            }
+            RowLayout {
+                Layout.fillWidth: true
+                spacing: 8
+                Item { Layout.fillWidth: true }
+                Button {
+                    text: "Choose folder"
+                    highlighted: true
+                    onClicked: {
+                        cancelSaveDialog.close()
+                        savePicker.volumes = ripView.saveVolumes
+                        const initial = Platform.StandardPaths.writableLocation(
+                            Platform.StandardPaths.MusicLocation)
+                        savePicker.openAt(initial)
+                    }
+                }
+                Button {
+                    text: "Delete rip"
+                    onClicked: {
+                        cancelSaveDialog.close()
+                        ripper.stopRip(/*deleteBatch=*/false)
+                        ripView.close()
+                    }
+                }
+            }
+        }
+    }
+
+    function requestClose() {
+        const s = ripper.state
+        // Idle / Done / Saving / Failed close immediately.
+        if (s === 0 || s === 7 || s === 8 || s === 10) {
+            ripper.endSession()
+            close()
+            return
+        }
+        // WaitingForDisc with no read in progress also closes silently —
+        // there's nothing to discard.
+        if (s === 1) {
+            ripper.endSession()
+            close()
+            return
+        }
+        // Mid-rip: confirm.
+        confirmDialog.inBatchAtOpen = ripper.inBatch
+        confirmDialog.open()
+    }
+}
