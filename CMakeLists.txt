@@ -259,6 +259,13 @@ if(NOT IOS AND NOT ANDROID)
     # encoder; Qt6::Network is the transport for MusicBrainz lookups.
     target_link_libraries(cdrip_cli PRIVATE
         Qt6::Core Qt6::Network arverify FLAC)
+    # Bundle the AccurateRip drive-offsets table (~4800 drives, parsed
+    # from accuraterip.com/driveoffsets.htm via scripts/import_drive_offsets.py).
+    # Accessed at runtime as `:/drive_offsets.json` by DriveOffsetDb.cpp.
+    qt_add_resources(cdrip_cli "cdrip_resources"
+        PREFIX "/"
+        FILES resources/drive_offsets.json
+    )
     if(APPLE)
         target_link_libraries(cdrip_cli PRIVATE
             "-framework IOKit"

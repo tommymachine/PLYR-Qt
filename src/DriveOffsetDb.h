@@ -17,6 +17,7 @@
 
 #include <optional>
 #include <string>
+#include <vector>
 
 namespace plyr::cd {
 
@@ -25,5 +26,14 @@ namespace plyr::cd {
 // uses). Returns nullopt if the drive isn't in the bundled table.
 std::optional<int> lookupDriveOffset(const std::string& vendor,
                                      const std::string& product);
+
+// Number of entries in the bundled AccurateRip table (excludes local
+// overrides). For diagnostics — e.g. `cdrip_cli --db-info` showing
+// "4800 drives bundled" so a user can confirm the resource embedded.
+int driveOffsetTableSize();
+
+// Random-ish sample of bundled drive names for `--db-info` to print.
+// Up to `n` entries. For diagnostics only.
+std::vector<std::string> sampleDriveNames(int n);
 
 } // namespace plyr::cd

@@ -23,6 +23,9 @@
 //                and idle on the main run loop until Ctrl-C. Used to
 //                manually verify that inserting a CD does NOT pop up
 //                Music.app while the shield is active.
+//   --db-info    Diagnostic: print the bundled AccurateRip drive-offset
+//                table stats and a small sample of entries. For "did the
+//                resource embed?" / "is my drive recognized?" debugging.
 
 #include "ArVerify.h"
 #include "CdDevice.h"
@@ -163,6 +166,16 @@ static int runReadToc() {
                 ids.accurateRipId1, ids.accurateRipId2);
     std::printf("  CDDB:          %08x\n", ids.cddbId);
     std::printf("  MusicBrainz:   %s\n", ids.musicBrainzDiscId.c_str());
+
+    const auto offsetOpt = plyr::cd::lookupDriveOffset(d.vendor, d.product);
+    if (offsetOpt) {
+        std::printf("\ndrive offset:  %+d samples (would be applied by --rip)\n",
+                    *offsetOpt);
+    } else {
+        std::printf("\ndrive offset:  unknown for %s / %s — --rip would land at 0,\n"
+                    "               arverify_cli's offset scan will compensate.\n",
+                    d.vendor.c_str(), d.product.c_str());
+    }
 
     return EXIT_SUCCESS;
 }
@@ -571,6 +584,24 @@ static int runRip(const char* outDir) {
     return EXIT_SUCCESS;
 }
 
+static int runDbInfo() {
+    const int n = plyr::cd::driveOffsetTableSize();
+    std::printf("AccurateRip drive-offset table: %d entries bundled.\n", n);
+    if (n == 0) {
+        std::fprintf(stderr,
+            "  (resource didn't load — Qt qrc :/drive_offsets.json missing?)\n");
+        return EXIT_FAILURE;
+    }
+    const auto sample = plyr::cd::sampleDriveNames(8);
+    std::printf("sample entries:\n");
+    for (const auto& s : sample) std::printf("  %s\n", s.c_str());
+    std::printf("\n");
+    std::printf("local overrides (always tried first):\n");
+    std::printf("  APPLE SUPERDRIVE -> %+d\n",
+                plyr::cd::lookupDriveOffset("APPLE", "SUPERDRIVE").value_or(0));
+    return EXIT_SUCCESS;
+}
+
 int main(int argc, char** argv) {
     // QCoreApplication is needed for the MusicBrainz lookup's nested
     // event loop (--rip). Cheap for the other modes; CFRunLoopRun in
@@ -581,8 +612,9 @@ int main(int argc, char** argv) {
     QCoreApplication::setOrganizationName("Concerto");
 
     for (int i = 1; i < argc; ++i) {
-        if (std::strcmp(argv[i], "--shield") == 0) return runShield();
-        if (std::strcmp(argv[i], "--toc")    == 0) return runReadToc();
+        if (std::strcmp(argv[i], "--shield")  == 0) return runShield();
+        if (std::strcmp(argv[i], "--toc")     == 0) return runReadToc();
+        if (std::strcmp(argv[i], "--db-info") == 0) return runDbInfo();
         if (std::strcmp(argv[i], "--read")   == 0) {
             uint32_t cap = 0;
             if (i + 1 < argc) {
