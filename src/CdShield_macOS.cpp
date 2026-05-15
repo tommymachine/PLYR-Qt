@@ -24,6 +24,22 @@
 //   IOCDMedia's children for any partition with IOMediaContent ==
 //   "CD_DA" — pure-data discs have no such children, pure-audio and
 //   mixed-mode discs do.
+//
+// * What the shield does NOT do: prevent Music.app from launching.
+//   DADiskClaim is asynchronous, and LaunchServices's CD-handler hook
+//   fires on the appearance event without waiting for DA's session
+//   state to settle. Empirically, an "always claim first, verify
+//   audio second" variant did NOT win that race in practice — Music
+//   still got started. The shield's value is exclusive disc access
+//   (Finder / Spotlight / Music can't read our raw sectors out from
+//   under a rip-in-progress), not Music suppression. Music
+//   suppression is plyr::MusicBlocker's job: it observes
+//   NSWorkspaceWillLaunchApplicationNotification and force-terminates
+//   Music between fork and main-window. The visible "icon flash"
+//   when a disc is inserted is Music.app briefly existing before
+//   MusicBlocker kills it — there's no way to remove that flicker
+//   short of rebinding the system's CD handler at the LaunchServices
+//   level, which is more invasive than the project's scope.
 
 #include "CdShield.h"
 
