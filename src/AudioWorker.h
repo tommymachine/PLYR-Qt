@@ -9,7 +9,8 @@
 //   ------------------------        --------------------------
 //   Q_PROPERTY getters → atomics    QAudioDecoder
 //   Q_INVOKABLE → emit request…  →  QAudioSink, PcmPipe, eq_engine_t
-//   QML-facing signals              Position timer, segment bookkeeping
+//   QML-facing signals              Position timer, segment bookkeeping,
+//                                   FFT/features lookahead tap
 //                         ← signal  workerSourceChanged, workerPosition…
 //
 // Direction of flow:
@@ -36,6 +37,13 @@
 #include <atomic>
 #include <memory>
 
+#ifdef Q_OS_MACOS
+namespace plyr::sync {
+class AudioClock;
+class DisplayClock;
+}
+#endif
+
 class FftProcessor;
 class AudioFeatures;
 
@@ -48,14 +56,14 @@ public:
 
     // Called before thread.start(). Stores a non-owning pointer — the
     // FftProcessor lives on the main thread but its pushPcm() is thread-
-    // safe (internal QMutex), so our DirectConnection emit from PcmPipe
-    // delivering on the audio thread is fine.
+    // safe (internal QMutex), so calls from the audio-thread lookahead
+    // tick are fine.
     void setFftProcessor(FftProcessor* fft) { m_fft = fft; }
 
     // Same lifetime + threading contract: AudioFeatures lives on the
     // main thread but its pushPcm() has an internal QMutex, so the
-    // DirectConnection from PcmPipe delivering on the audio thread is
-    // safe. Stored pointer is read by onSamplesServed only.
+    // lookahead-tick call from the audio thread is safe. Pointer is read
+    // by tickLookahead() only.
     void setAudioFeatures(AudioFeatures* af) { m_features = af; }
 
     // Thread-safe read of the EQ handle. Returns the pointer stored by
@@ -108,6 +116,23 @@ public slots:
     void pushPreviewPcm(QByteArray int16Bytes);
     void stopPreviewStream();
 
+    // A/V-sync calibration. The FFT/AudioFeatures get fed from a peek
+    // whose offset is computed analytically on macOS (AudioClock anchor
+    // + DisplayClock target + device latency) or via a 35 ms fallback
+    // off-Mac, plus this user-tunable bias for headphone / Bluetooth
+    // codec delays the OS doesn't report.
+    void setSyncCalibrationMs(int ms);
+
+    // Non-owning, set from the main thread BEFORE play starts. The
+    // pointers can be null on non-Mac builds or when attach failed —
+    // tickLookahead falls back to the static-ms path in that case.
+    // Stored via atomic so the audio-thread reader sees the writes
+    // without a lock.
+#ifdef Q_OS_MACOS
+    void setClocksForLookahead(plyr::sync::AudioClock*   audio,
+                               plyr::sync::DisplayClock* display);
+#endif
+
 signals:
     // State-change notifications. Auto-queued to AudioEngine on main.
     void engineReady();
@@ -119,12 +144,15 @@ signals:
     void workerTrackEnded();
     void workerActiveTrackChanged(int playlistIndex);
     void workerReadyForNextTrack();
+    // The default output device changed (user plugged headphones, etc.).
+    // Engine's slot re-attaches AudioClock to pick up the new device's
+    // latency and transport. Mac-only consumer; harmless on other plats.
+    void workerOutputDeviceChanged();
 
 private slots:
     void onBufferReady();
     void onDecoderFinished();
     void onSinkStateChanged(QtAudio::State state);
-    void onSamplesServed(const char* data, qint64 bytes);
     void onAudioOutputsChanged();
 
 private:
@@ -135,6 +163,7 @@ private:
     qint64 currentPipeByte() const;
     qint64 computePositionMs() const;
     void   tickPosition();
+    void   tickLookahead();
     void   checkForSegmentTransition();
 
     // Tear down the current QAudioSink and rebuild a fresh one from the
@@ -157,6 +186,7 @@ private:
     std::unique_ptr<QAudioDecoder>  m_decoder;
     std::unique_ptr<QAudioSink>     m_sink;
     std::unique_ptr<QTimer>         m_positionTimer;
+    std::unique_ptr<QTimer>         m_lookaheadTimer;
     std::unique_ptr<QMediaDevices>  m_mediaDevices;
     QByteArray                      m_lastDefaultOutputId;
     EqEngine*                       m_eq = nullptr;
@@ -182,4 +212,27 @@ private:
     // sink-state handler skip its "unexpected stop → recreate" branch
     // when a file-playback transition tears things down deliberately.
     bool                            m_previewStreamActive = false;
+
+    // A/V-sync lookahead state. The lookahead timer fires at 60 Hz on
+    // the audio thread, computes the per-frame playhead via the formula
+    //   s_f = S_a + (T_pixel − t_a − L_out) · sampleRate
+    // (mac path; AudioClock anchor S_a, T_pixel from DisplayClock,
+    // L_out from the device latency chain), peeks that offset out of
+    // the pipe, and pushes the result to FFT/Features. On non-Mac or
+    // if either clock is missing, the offset collapses to the legacy
+    // 35 ms static lookahead. The calibration bias is added either way.
+    int                             m_lookaheadStaticMs = 35;
+    int                             m_syncCalibrationMs = 0;
+    QByteArray                      m_lookaheadScratch;
+
+#ifdef Q_OS_MACOS
+    // Set on main thread via setClocksForLookahead. The audio-thread
+    // tickLookahead loads via atomic acquire. Lifetimes are owned by
+    // AudioEngine on the main thread — it tears them down after the
+    // worker's shutdown() completes, so as long as we read them only
+    // while the timer is firing (= worker thread alive + play state),
+    // they remain valid.
+    std::atomic<plyr::sync::AudioClock*>   m_audioClockAtom{nullptr};
+    std::atomic<plyr::sync::DisplayClock*> m_displayClockAtom{nullptr};
+#endif
 };

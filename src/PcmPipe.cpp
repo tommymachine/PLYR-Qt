@@ -54,6 +54,26 @@ qint64 PcmPipe::bytesAvailable() const
     return (m_buf.size() - m_pos) + QIODevice::bytesAvailable();
 }
 
+qint64 PcmPipe::peek(qint64 offset, char* out, qint64 maxLen) const
+{
+    if (!out || maxLen <= 0) return 0;
+    QMutexLocker lk(&m_mutex);
+    // Negative offsets are legal — they let the visualizer FFT tap
+    // samples that Qt's sink already pulled from the pipe but that
+    // are still sitting in QAudioSink's internal ringbuffer waiting
+    // to be handed to the AURenderCallback. We don't free already-
+    // read bytes from m_buf (the whole decoded track stays resident),
+    // so the index math only needs the bounds check below.
+    const qint64 start = m_pos + offset;
+    if (start < 0) return 0;                     // before the start of decoded data
+    if (start >= m_buf.size()) return 0;         // beyond decoded tail
+    const qint64 avail = m_buf.size() - start;
+    const qint64 n = qMin(maxLen, avail);
+    if (n <= 0) return 0;
+    std::memcpy(out, m_buf.constData() + start, size_t(n));
+    return n;
+}
+
 qint64 PcmPipe::readData(char* out, qint64 maxLen)
 {
     QMutexLocker lk(&m_mutex);

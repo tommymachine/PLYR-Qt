@@ -46,7 +46,7 @@ Item {
     //   boost = 1.0 → no change
     //   boost = 1.6 → moderate lift (level^0.625)
     //   boost = 2.0 → strong lift  (level^0.5)
-    property real boost: 1.6
+    property real boost: 1.0
 
     implicitWidth:  barCount * barWidth + (barCount - 1) * barGap
     implicitHeight: 14

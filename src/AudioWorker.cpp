@@ -2,10 +2,16 @@
 #include "AudioFeatures.h"
 #include "FftProcessor.h"
 
+#ifdef Q_OS_MACOS
+#include "AudioClock_macOS.h"
+#include "DisplayClock_macOS.h"
+#endif
+
 #include <QAudioBuffer>
 #include <QDebug>
 #include <QThread>
 #include <QtAudio>
+#include <algorithm>
 #include <cstring>
 
 namespace {
@@ -36,10 +42,11 @@ void AudioWorker::init()
 {
     Q_ASSERT(QThread::currentThread() == thread());
 
-    m_pipe          = std::make_unique<PcmPipe>();
-    m_decoder       = std::make_unique<QAudioDecoder>();
-    m_sink          = std::make_unique<QAudioSink>(m_fmt);
-    m_positionTimer = std::make_unique<QTimer>();
+    m_pipe           = std::make_unique<PcmPipe>();
+    m_decoder        = std::make_unique<QAudioDecoder>();
+    m_sink           = std::make_unique<QAudioSink>(m_fmt);
+    m_positionTimer  = std::make_unique<QTimer>();
+    m_lookaheadTimer = std::make_unique<QTimer>();
 
     m_decoder->setAudioFormat(m_fmt);
     m_sink->setVolume(m_volume);
@@ -84,16 +91,42 @@ void AudioWorker::init()
     connect(m_sink.get(), &QAudioSink::stateChanged,
             this, &AudioWorker::onSinkStateChanged);
 
-    // DirectConnection: pipe->samplesServed fires inside PcmPipe::readData
-    // on this same (audio) thread. The slot calls FftProcessor::pushPcm
-    // which is thread-safe (internal QMutex).
-    connect(m_pipe.get(), &PcmPipe::samplesServed,
-            this, &AudioWorker::onSamplesServed,
-            Qt::DirectConnection);
+    // The FFT/AudioFeatures used to subscribe to PcmPipe::samplesServed
+    // here (DirectConnection), seeing audio at the moment it was copied
+    // into QAudioSink's period buffer. That made the visualizer trail
+    // the actual audio output by ~15–25 ms (sink → CoreAudio path)
+    // minus the visual pipeline (~20–35 ms compose+vsync), which
+    // landed slightly behind on punchy material.
+    //
+    // The lookahead tap below feeds them from a peek that's computed
+    // analytically on macOS (AudioClock anchor + DisplayClock target
+    // − output latency, all in nanosecond-accurate seconds) or from a
+    // static 35 ms fallback elsewhere. By the time a frame is composited
+    // and presented, the audio those samples represent is the audio
+    // actually leaving the speakers. `samplesServed` is still emitted
+    // from the pipe for any future diagnostic consumer, but the FFT /
+    // features pipeline no longer listens to it.
 
     m_positionTimer->setInterval(33);      // ~30 Hz
     connect(m_positionTimer.get(), &QTimer::timeout,
             this, &AudioWorker::tickPosition);
+
+    // Lookahead tap. 60 Hz so the FFT/features see roughly one fresh
+    // slice per visualized frame at 60 fps. Runs on the audio thread
+    // (same thread as PcmPipe::readData), so peek + push are entirely
+    // on this thread and contend with the sink only on the pipe mutex.
+    //
+    // Each tick re-anchors to (playhead + lookaheadMs) and copies one
+    // scratch buffer worth of bytes. 16 ms × bytesPerMs ≈ 5.6 kB at
+    // 44.1 kHz stereo float32 — small enough to memcpy under the pipe
+    // lock in microseconds, large enough to overlap consecutive ticks
+    // (16.7 ms apart) so no audio frames get skipped over. Pre-sized
+    // once here; the tick path never allocates.
+    m_lookaheadTimer->setInterval(16);     // ~60 Hz
+    const qint64 scratchCap = 16 * bytesPerMs();  // ~5.6 kB at 44.1 kHz
+    m_lookaheadScratch.resize(int(scratchCap));
+    connect(m_lookaheadTimer.get(), &QTimer::timeout,
+            this, &AudioWorker::tickLookahead);
 
     // Watch for system audio-output device changes (user switches default
     // output, device unplug/replug). On change we tear down the sink
@@ -123,6 +156,7 @@ void AudioWorker::shutdown()
 
     m_mediaDevices.reset();
     m_positionTimer.reset();
+    m_lookaheadTimer.reset();
     m_sink.reset();
     m_decoder.reset();
     m_pipe.reset();
@@ -157,7 +191,8 @@ void AudioWorker::play()
     if (!m_playing) {
         m_playing = true;
         emit workerPlayingChanged(true);
-        if (m_positionTimer) m_positionTimer->start();
+        if (m_positionTimer)  m_positionTimer->start();
+        if (m_lookaheadTimer) m_lookaheadTimer->start();
     }
 }
 
@@ -168,7 +203,8 @@ void AudioWorker::pause()
     if (m_playing) {
         m_playing = false;
         emit workerPlayingChanged(false);
-        if (m_positionTimer) m_positionTimer->stop();
+        if (m_positionTimer)  m_positionTimer->stop();
+        if (m_lookaheadTimer) m_lookaheadTimer->stop();
     }
 }
 
@@ -190,7 +226,8 @@ void AudioWorker::stop()
     if (m_playing) {
         m_playing = false;
         emit workerPlayingChanged(false);
-        if (m_positionTimer) m_positionTimer->stop();
+        if (m_positionTimer)  m_positionTimer->stop();
+        if (m_lookaheadTimer) m_lookaheadTimer->stop();
     }
     emit workerPositionChanged(0);
 }
@@ -349,7 +386,8 @@ void AudioWorker::startPreviewStream(qint64 totalDurationMs, qint64 startOffsetM
     // segment.
     m_playing = true;
     emit workerPlayingChanged(true);
-    if (m_positionTimer) m_positionTimer->start();
+    if (m_positionTimer)  m_positionTimer->start();
+    if (m_lookaheadTimer) m_lookaheadTimer->start();
 }
 
 
@@ -398,7 +436,8 @@ void AudioWorker::stopPreviewStream()
     if (m_playing) {
         m_playing = false;
         emit workerPlayingChanged(false);
-        if (m_positionTimer) m_positionTimer->stop();
+        if (m_positionTimer)  m_positionTimer->stop();
+        if (m_lookaheadTimer) m_lookaheadTimer->stop();
     }
     emit workerPositionChanged(0);
 }
@@ -501,7 +540,8 @@ void AudioWorker::onBufferReady()
             emit workerPlayingChanged(true);
             if (m_sink && m_sink->state() == QtAudio::SuspendedState)
                 m_sink->resume();
-            if (m_positionTimer) m_positionTimer->start();
+            if (m_positionTimer)  m_positionTimer->start();
+            if (m_lookaheadTimer) m_lookaheadTimer->start();
         }
     }
 }
@@ -631,7 +671,8 @@ void AudioWorker::onSinkStateChanged(QtAudio::State state)
             if (m_playing) {
                 m_playing = false;
                 emit workerPlayingChanged(false);
-                if (m_positionTimer) m_positionTimer->stop();
+                if (m_positionTimer)  m_positionTimer->stop();
+                if (m_lookaheadTimer) m_lookaheadTimer->stop();
             }
             emit workerTrackEnded();
         }
@@ -651,6 +692,9 @@ void AudioWorker::onAudioOutputsChanged()
         << "new:" << newDefault;
     m_lastDefaultOutputId = newDefault;
     recreateSink();
+    // Engine listens for this and re-attaches the AudioClock probe AU
+    // to the new default device so its latency value follows the change.
+    emit workerOutputDeviceChanged();
 }
 
 
@@ -694,10 +738,161 @@ void AudioWorker::recreateSink()
 }
 
 
-void AudioWorker::onSamplesServed(const char* data, qint64 bytes)
+void AudioWorker::tickLookahead()
 {
-    // Both consumers run on the audio thread (DirectConnection from
-    // PcmPipe). Their internal mutexes are short — a few μs.
-    if (m_fft)      m_fft     ->pushPcm(data, bytes, m_fmt);
-    if (m_features) m_features->pushPcm(data, bytes, m_fmt);
+    // Audio-thread tick. Compute how far ahead of the sink's current
+    // readPos to peek in the pipe, then push that slice to the FFT and
+    // AudioFeatures.
+    //
+    // macOS path (analytic): solve for the playhead sample at the next
+    // scanout instant T_pixel:
+    //   s_f = S_a + (T_pixel − host_to_seconds(H_a) − L_out) · SR
+    // where (H_a, S_a, SR, L_out) come from AudioClock's seqlock anchor
+    // and T_pixel comes from DisplayClock's CADisplayLink targetTimestamp.
+    // Because the AU has been consuming at SR samples/sec since H_a, the
+    // S_a/H_a anchor algebraically cancels out:
+    //   leadFrames = (T_pixel − t_now − L_out) · SR
+    // — but we still validate the anchor exists (proves the AU is alive)
+    // and read SR + L_out from it.
+    //
+    // Fallback (non-Mac, attach failed, or no callbacks yet): use the
+    // static 35 ms lookahead the engine shipped with before the analytic
+    // path landed. Calibration is added on top either way.
+    //
+    // Allocation-free: m_lookaheadScratch is pre-sized in init().
+    if (!m_pipe || m_lookaheadScratch.isEmpty()) return;
+    if (!m_fft && !m_features) return;
+
+    const qint64 bpms = bytesPerMs();
+    if (bpms <= 0) return;
+    const qint64 bytesPerFrame =
+        qint64(m_fmt.bytesPerSample()) * m_fmt.channelCount();
+    if (bytesPerFrame <= 0) return;
+
+    qint64 offsetBytes = -1;  // -1 = analytic not available, use fallback
+
+#ifdef Q_OS_MACOS
+    plyr::sync::AudioClock*   ac =
+        m_audioClockAtom.load(std::memory_order_acquire);
+    plyr::sync::DisplayClock* dc =
+        m_displayClockAtom.load(std::memory_order_acquire);
+    if (ac && dc) {
+        auto aOpt = ac->load();
+        auto dOpt = dc->load();
+        // One-time diagnostic: confirm both anchors are ticking the
+        // first time we successfully compute the analytic lookahead.
+        static bool firstSyncLogged = false;
+        if (!firstSyncLogged && aOpt && dOpt && aOpt->sampleRate > 0.0) {
+            firstSyncLogged = true;
+            qInfo().noquote() << QString::asprintf(
+                "[avsync] first analytic sync: aBuf=%llu dCb=%llu "
+                "lat=%.2fms refreshIv=%.3fms",
+                (unsigned long long)aOpt->version,
+                (unsigned long long)dOpt->version,
+                aOpt->outputLatencySec * 1000.0,
+                dOpt->refreshIntervalSec * 1000.0);
+        }
+        if (aOpt && dOpt && aOpt->sampleRate > 0.0) {
+            // Two anchors at host-time domain (seconds since boot):
+            //   t_now    = wall-clock now
+            //   T_pixel  = scanout instant the next frame will appear
+            //   L_out    = device + safety + stream latency in seconds
+            //
+            // The AU's S_a anchor maps host time H_a to sample-index S_a;
+            // by linearity, the sample heard at T_pixel is
+            //   S_at_pixel = S_a + (T_pixel − t(H_a) − L_out) · SR.
+            // The "lead" relative to the AU's current consumption point
+            // is therefore
+            //   leadSamples = S_at_pixel − S_now_being_consumed
+            //               = (T_pixel − t_now − L_out) · SR
+            // — the H_a / S_a anchor cancels out because the AU has been
+            // consuming at SR samples/second since H_a. We still validate
+            // that the anchor exists (proves the AU is alive) and read
+            // SR + L_out from it.
+            const double now    = plyr::sync::AudioClock::nowSeconds();
+            const double deltaS = dOpt->targetPresentationSec - now
+                                   - aOpt->outputLatencySec;
+            // leadFrames is the number of audio frames the pipe playhead
+            // is behind the sample-that-will-be-heard-at-T_pixel.
+            // bytesPerFrame = bytesPerSample × channelCount.
+            const double leadFrames = deltaS * aOpt->sampleRate;
+            offsetBytes = qint64(
+                std::llround(leadFrames * double(bytesPerFrame)));
+        }
+    }
+#endif
+
+    if (offsetBytes < 0) {
+        // Fallback path: legacy static lookahead.
+        offsetBytes = qint64(m_lookaheadStaticMs) * bpms;
+    }
+    // Calibration bias (user-tunable, signed) — same units regardless
+    // of which path produced the base offset.
+    offsetBytes += qint64(m_syncCalibrationMs) * bpms;
+
+    // Account for Qt's QAudioSink internal ringbuffer dwell. PcmPipe's
+    // readPos advances when Qt PULLS bytes from us, but those bytes
+    // then sit in QAudioSink's internal buffer (set in init(), default
+    // 500 ms) before reaching the AURenderCallback. processedUSecs()
+    // counts bytes Qt has actually handed off to CoreAudio. The gap
+    // (readPos - currentPipeByte) is the sink-buffer dwell — subtract
+    // it so the FFT taps the byte that's audible NOW, not the byte
+    // that's audible 500 ms from now.
+    if (m_sink && m_sinkStarted) {
+        const qint64 readPos      = m_pipe->readPos();
+        const qint64 audibleByte  = currentPipeByte();
+        const qint64 sinkDwellB   = readPos - audibleByte;
+        if (sinkDwellB > 0) offsetBytes -= sinkDwellB;
+    }
+
+    // Clamp to a sane range. Negative offsets are now legal (peek
+    // supports them) — they let us tap samples already pulled from
+    // the pipe but still in Qt's sink-buffer. Bound them by ±2 s so
+    // an off-the-rails formula can't read into the void.
+    const qint64 maxOffset = qint64(2000) * bpms;
+    if (offsetBytes >  maxOffset) offsetBytes =  maxOffset;
+    if (offsetBytes < -maxOffset) offsetBytes = -maxOffset;
+
+    // Frame-align so the FFT's stereo deinterleave never starts mid-
+    // frame. C++ integer division truncates toward zero, so for
+    // negative offsets we need floor-division to align downward.
+    if (offsetBytes >= 0) {
+        offsetBytes = (offsetBytes / bytesPerFrame) * bytesPerFrame;
+    } else {
+        offsetBytes = -(((-offsetBytes + bytesPerFrame - 1) / bytesPerFrame)
+                        * bytesPerFrame);
+    }
+
+    const qint64 cap = m_lookaheadScratch.size();
+    const qint64 n =
+        m_pipe->peek(offsetBytes, m_lookaheadScratch.data(), cap);
+    if (n <= 0) {
+        // Pipe doesn't have enough data ahead (very end of track, or
+        // streaming preview starving briefly). The FFT ring keeps its
+        // contents and the bands decay through normal release smoothing.
+        return;
+    }
+
+    if (m_fft)      m_fft     ->pushPcm(m_lookaheadScratch.constData(), n, m_fmt);
+    if (m_features) m_features->pushPcm(m_lookaheadScratch.constData(), n, m_fmt);
 }
+
+
+void AudioWorker::setSyncCalibrationMs(int ms)
+{
+    // Queued setter — runs on the audio thread. Clamp to ±300 ms.
+    if (ms < -300) ms = -300;
+    if (ms >  300) ms =  300;
+    m_syncCalibrationMs = ms;
+}
+
+#ifdef Q_OS_MACOS
+void AudioWorker::setClocksForLookahead(plyr::sync::AudioClock*   audio,
+                                        plyr::sync::DisplayClock* display)
+{
+    // Called from main thread. Atomic store with release so the audio-
+    // thread tick's acquire load sees consistent pointers.
+    m_audioClockAtom.store(audio,    std::memory_order_release);
+    m_displayClockAtom.store(display, std::memory_order_release);
+}
+#endif

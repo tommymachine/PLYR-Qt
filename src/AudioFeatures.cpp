@@ -1,5 +1,7 @@
 #include "AudioFeatures.h"
 
+#include <QDebug>
+
 extern "C" {
 #include "kiss_fftr.h"
 }

@@ -1,11 +1,17 @@
 // QIODevice that buffers an entire decoded track's PCM (appended by a
 // QAudioDecoder) and streams it to a QAudioSink on demand. Emits a
-// `samplesServed` signal on every read so the FFT processor can tap the
-// audio right as it's being played.
+// `samplesServed` signal on every read for diagnostic taps.
+//
+// For visualizer/spectrum work, prefer the `peek(offset, ...)` interface:
+// it samples *ahead* of the playhead so the FFT depicts audio that is
+// about to be heard rather than audio that just landed in the sink's
+// period buffer (see AudioWorker's lookahead tap and AudioEngine's
+// lookaheadMs property).
 //
 // The pipe is thread-safe across the usual split:
 //   - main/decoder thread calls `append(...)` as buffers decode
 //   - audio thread calls `readData(...)` via QAudioSink
+//   - audio thread calls `peek(...)` from the lookahead tick
 
 #pragma once
 
@@ -50,6 +56,29 @@ public:
     // Move the playhead to `pos` bytes (caller ensures frame alignment).
     // Returns false if the position is beyond what's been decoded.
     bool seekToPos(qint64 pos);
+
+    // Read-only tap: copy up to `maxLen` bytes starting `offset` bytes
+    // ahead of the current playhead (`m_pos + offset`) into `out`,
+    // WITHOUT advancing the playhead and WITHOUT emitting `samplesServed`.
+    //
+    // Returns the number of bytes actually copied. May be less than
+    // `maxLen` if the decoder hasn't produced enough data yet — that's a
+    // soft condition, not an error: the caller should push what's
+    // available and try again next tick. Returns 0 if `offset` is past
+    // the end of currently-buffered data (e.g. end-of-track).
+    //
+    // Used by the visualizer's lookahead tap so the FFT/AudioFeatures
+    // reflect audio that is about to be heard, not audio that just
+    // finished being copied into the sink's period buffer. Bytes are
+    // returned PRE-EQ (lock is held during memcpy; EQ in readData() runs
+    // post-lock). This is an accepted tradeoff — the alternative would
+    // be running the EQ on the peek path too, which doubles the DSP
+    // cost just to colour the spectrum. The visible drift is dominated
+    // by sink latency, not by EQ shape.
+    //
+    // Thread-safe: takes the same lock as readData(). The held region
+    // is a bounded memcpy.
+    qint64 peek(qint64 offset, char* out, qint64 maxLen) const;
 
     // QIODevice
     qint64 bytesAvailable() const override;

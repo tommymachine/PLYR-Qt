@@ -14,6 +14,7 @@
 #include <QQmlApplicationEngine>
 #include <QQmlContext>
 #include <QQuickStyle>
+#include <QQuickWindow>
 #include <QSettings>
 #include <QTimer>
 
@@ -101,11 +102,40 @@ int main(int argc, char *argv[])
     QSettings settings;
 
     auto saveState = [&]() {
-        settings.setValue("folderPath",   playlist.folderPath());
-        settings.setValue("currentIndex", playlist.currentIndex());
-        settings.setValue("positionMs",   audio.position());
-        settings.setValue("volume",       audio.volume());
+        settings.setValue("folderPath",        playlist.folderPath());
+        settings.setValue("currentIndex",      playlist.currentIndex());
+        settings.setValue("positionMs",        audio.position());
+        settings.setValue("volume",            audio.volume());
+        settings.setValue("syncCalibrationMs", audio.syncCalibrationMs());
     };
+
+    // Restore the A/V-sync calibration bias.
+    //
+    // Before the analytic A/V-sync path landed, this property was named
+    // `lookaheadMs` and held a static lookahead in ms (default 35). Now
+    // the formula computes the lookahead analytically and this value is
+    // an additive bias (default 0). On first launch after the rename:
+    // read the old key for back-compat, treat it as an offset relative
+    // to the old default, write the new key, delete the old one.
+    {
+        if (settings.contains("syncCalibrationMs")) {
+            const int saved = settings.value("syncCalibrationMs", 0).toInt();
+            if (saved != audio.syncCalibrationMs()) {
+                audio.setSyncCalibrationMs(saved);
+            }
+        } else if (settings.contains("lookaheadMs")) {
+            // Migrate: legacy default was 35; treat (saved − 35) as the
+            // new calibration bias so users who tuned it preserve their
+            // perceived offset. Then drop the old key.
+            const int savedOld = settings.value("lookaheadMs", 35).toInt();
+            const int migrated = savedOld - 35;
+            audio.setSyncCalibrationMs(migrated);
+            settings.setValue("syncCalibrationMs", migrated);
+            settings.remove("lookaheadMs");
+            qInfo() << "[settings] migrated lookaheadMs=" << savedOld
+                    << "to syncCalibrationMs=" << migrated;
+        }
+    }
 
     // Restore where we left off, or fall back to the default demo folder
     // on first launch.
@@ -315,6 +345,14 @@ int main(int argc, char *argv[])
     engine.loadFromModule("PLYR", isMobile ? "MainMobile" : "Main");
     if (engine.rootObjects().isEmpty())
         return -1;
+
+    // Hand the QML window to AudioEngine so it can spin up the macOS
+    // CAMetalDisplayLink on top of QQuickWindow's CAMetalLayer. attach
+    // is deferred internally until the scene graph has initialized
+    // (i.e. the CAMetalLayer exists). No-op on non-Mac builds.
+    if (auto* w = qobject_cast<QQuickWindow*>(engine.rootObjects().first())) {
+        audio.attachToWindow(w);
+    }
 
     return app.exec();
 }

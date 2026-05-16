@@ -978,6 +978,14 @@ ApplicationWindow {
                     onTriggered: fft.refresh()
                 }
 
+                // A/V sync calibration overlay — dot flashes on each
+                // detected onset; slider biases the analytic lookahead.
+                SyncTuner {
+                    anchors.bottom: parent.bottom
+                    anchors.right:  parent.right
+                    anchors.margins: 12
+                }
+
                 // Drives the higher-level AudioFeatures pipeline at the
                 // same 60 Hz cadence: per-band envelope followers,
                 // centroid, flux, onset detection, phase correlation, and

@@ -1,5 +1,8 @@
 cmake_minimum_required(VERSION 3.21)
-project(plyr_qt VERSION 0.1 LANGUAGES CXX C)
+# OBJC + OBJCXX are needed for the macOS .mm files (audio/display clock
+# shims, NSOpenPanel prewarm, MusicBlocker observer). On non-Apple builds
+# CMake silently ignores OBJC* — they're harmless to list everywhere.
+project(plyr_qt VERSION 0.1 LANGUAGES CXX C OBJC OBJCXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -142,6 +145,7 @@ qt_add_qml_module(plyr_qt
         qml/PLYRSeekSlider.qml
         qml/MarqueeText.qml
         qml/PlayingBars.qml
+        qml/SyncTuner.qml
         qml/EqPanel.qml
         qml/EqBandSlider.qml
         qml/EqPresetChip.qml
@@ -274,12 +278,37 @@ if(APPLE AND NOT IOS)
         src/MusicBlocker_macOS.mm
         src/CdShield_macOS.cpp
         src/CdDevice_macOS.cpp
+        # A/V-sync clock shims. AudioClock attaches a render-notify
+        # callback to a probe AUHAL bound to the same default output
+        # device Qt's QAudioSink uses, capturing per-buffer host-time +
+        # sample-count anchors. DisplayClock attaches a
+        # CAMetalDisplayLink (macOS 14+) to QQuickWindow's CAMetalLayer,
+        # surfacing targetPresentationTimestamp per refresh. Both publish
+        # via lock-free seqlocks so the audio thread's lookahead tap can
+        # solve for the exact playhead sample at the next scanout instant.
+        src/AudioClock_macOS.h
+        src/AudioClock_macOS.mm
+        src/DisplayClock_macOS.h
+        src/DisplayClock_macOS.mm
+    )
+    set_source_files_properties(
+        src/AudioClock_macOS.mm
+        src/DisplayClock_macOS.mm
+        PROPERTIES LANGUAGE OBJCXX
     )
     target_link_libraries(plyr_qt PRIVATE
         "-framework AppKit"
         "-framework DiskArbitration"
         "-framework IOKit"
         "-framework CoreFoundation"
+        # CoreAudio anchor (AUHAL + AudioUnit render-notify) and the
+        # display anchor (CAMetalDisplayLink / CVDisplayLink fallback).
+        "-framework AudioToolbox"
+        "-framework CoreAudio"
+        "-framework AudioUnit"
+        "-framework CoreVideo"
+        "-framework QuartzCore"
+        "-framework Metal"
     )
 endif()
 
