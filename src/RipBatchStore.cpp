@@ -23,6 +23,7 @@ QJsonObject discToJson(const RipBatchDisc& d) {
     if (!d.mbDiscId.isEmpty()) o.insert(QStringLiteral("mb_disc_id"), d.mbDiscId);
     o.insert(QStringLiteral("status"), d.status);
     if (!d.savedPath.isEmpty()) o.insert(QStringLiteral("saved_path"), d.savedPath);
+    if (!d.tempDir.isEmpty())   o.insert(QStringLiteral("temp_dir"),   d.tempDir);
     return o;
 }
 
@@ -32,6 +33,7 @@ RipBatchDisc discFromJson(const QJsonObject& o) {
     d.mbDiscId  = o.value(QStringLiteral("mb_disc_id")).toString();
     d.status    = o.value(QStringLiteral("status")).toString(QStringLiteral("pending"));
     d.savedPath = o.value(QStringLiteral("saved_path")).toString();
+    d.tempDir   = o.value(QStringLiteral("temp_dir")).toString();
     return d;
 }
 
@@ -125,6 +127,36 @@ std::optional<RipBatch> RipBatchStore::lookupByReleaseGroup(
         const auto b = batchFromJson(QJsonDocument::fromJson(f.readAll()));
         if (!b) continue;
         if (b->releaseGroupId != releaseGroupId) continue;
+        if (!best || b->updatedAt > bestUpdated) {
+            best = b;
+            bestUpdated = b->updatedAt;
+        }
+    }
+    return best;
+}
+
+std::optional<RipBatch> RipBatchStore::lookupByDiscId(
+    const QString& mbDiscId, const QString& root)
+{
+    if (mbDiscId.isEmpty()) return std::nullopt;
+    QDir dir(root);
+    if (!dir.exists()) return std::nullopt;
+
+    std::optional<RipBatch> best;
+    QDateTime bestUpdated;
+    for (const auto& name :
+         dir.entryList(QStringList{QStringLiteral("*.json")}, QDir::Files)) {
+        QFile f(dir.absoluteFilePath(name));
+        if (!f.open(QIODevice::ReadOnly)) continue;
+        const auto b = batchFromJson(QJsonDocument::fromJson(f.readAll()));
+        if (!b) continue;
+        bool match = false;
+        for (const auto& d : b->discs) {
+            if (!d.mbDiscId.isEmpty() && d.mbDiscId == mbDiscId) {
+                match = true; break;
+            }
+        }
+        if (!match) continue;
         if (!best || b->updatedAt > bestUpdated) {
             best = b;
             bestUpdated = b->updatedAt;

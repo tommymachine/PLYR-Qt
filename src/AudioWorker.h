@@ -103,7 +103,8 @@ public slots:
     //
     //   stopPreviewStream() — drain + stop the sink; the next playAt()
     //   re-uses the decoder path normally.
-    void startPreviewStream(qint64 totalDurationMs = 0);
+    void startPreviewStream(qint64 totalDurationMs = 0,
+                            qint64 startOffsetMs   = 0);
     void pushPreviewPcm(QByteArray int16Bytes);
     void stopPreviewStream();
 

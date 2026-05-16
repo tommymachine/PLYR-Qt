@@ -214,42 +214,83 @@ int main(int argc, char *argv[])
                          playlist.appendTrack(flacPath);
                      });
 
-    // discSaved: the disc is now durably saved. If we wrote in-place
-    // (batch with known parent), nothing moved — the playlist's URLs
-    // already point at the right files. For the standalone/first-disc
-    // case the temp dir got renamed into the user's chosen folder;
-    // remap so the playlist follows. Streaming preview continues to
-    // play out the disc's buffered audio; the user can manually click
-    // a different track at any time to swap into FLAC playback.
+    // discSaved: the disc is now durably saved.
+    //
+    // Streaming preview may still be playing out the buffered CDDA from
+    // the rip. We must NOT teardown the preview and restart from track
+    // 1 — that'd yank the audio back to the disc start. Instead, swap
+    // the playlist's URLs to the saved files (so the UI shows the
+    // right paths), align currentIndex with whatever track the stream
+    // is currently in (without triggering playAt — advancingByEngine
+    // suppresses that), and let the preview run out naturally. The
+    // user picks a track or seeks to switch into FLAC playback.
     QObject::connect(&ripper, &plyr::cd::Ripper::discSaved,
                      &playlist,
-                     [&playlist, &audio]
+                     [&playlist, &audio, &ripper, &advancingByEngine]
                      (const QString& fromTempDir, const QString& finalPath) {
-                         if (fromTempDir == finalPath) {
-                             // In-place rip already lives at finalPath.
-                             // Nothing to move; the playlist scan
-                             // through openFolder() at rip start
-                             // already covers the parent. A targeted
-                             // rescan keeps section headers in sync.
-                             return;
-                         }
-                         if (fromTempDir.isEmpty()
-                             || playlist.folderPath() != fromTempDir)
-                         {
-                             // Out-of-place save AND playlist isn't on
-                             // the temp dir — cold-open the saved
-                             // folder + play.
-                             playlist.openFolder(finalPath);
-                             if (playlist.count() > 0) {
-                                 playlist.setCurrentIndex(0);
-                                 audio.play();
+                         const bool previewActive =
+                             audio.source().toString().startsWith("preview://");
+
+                         // Stash where playback is RIGHT NOW so we can
+                         // figure out which track to highlight after
+                         // any folder reshuffle.
+                         const QVariantList tocRows = ripper.tracks();
+                         const qint64 posMs = audio.position();
+                         const qint64 durMs = audio.duration();
+                         int streamingTrackIdx = -1;
+                         if (previewActive && durMs > 0 && !tocRows.isEmpty()) {
+                             const double frac =
+                                 double(posMs) / double(durMs);
+                             for (int i = 0; i < tocRows.size(); ++i) {
+                                 const auto m = tocRows[i].toMap();
+                                 const double sf =
+                                     m.value("startFraction").toDouble();
+                                 const double ef =
+                                     m.value("endFraction").toDouble();
+                                 if (ef <= sf) continue;
+                                 if (frac >= sf && frac < ef) {
+                                     streamingTrackIdx = i;
+                                     break;
+                                 }
                              }
-                             return;
+                             if (streamingTrackIdx < 0)
+                                 streamingTrackIdx = tocRows.size() - 1;
                          }
-                         // Out-of-place save with playlist on the temp
-                         // dir: re-target URLs without resetting the
-                         // current playback position.
-                         playlist.remapFolder(fromTempDir, finalPath);
+
+                         // Update the playlist's view of the files.
+                         if (fromTempDir == finalPath) {
+                             // In-place rip: URLs already point at the
+                             // final location. Nothing to remap.
+                         } else if (fromTempDir.isEmpty()
+                                    || playlist.folderPath() != fromTempDir) {
+                             // Out-of-place save AND playlist isn't on
+                             // the temp dir — open the saved folder.
+                             playlist.openFolder(finalPath);
+                         } else {
+                             // Out-of-place save with playlist on the
+                             // temp dir: re-target URLs without
+                             // disrupting playback.
+                             playlist.remapFolder(fromTempDir, finalPath);
+                         }
+
+                         if (previewActive) {
+                             // Align the playlist highlight with the
+                             // streamed track without yanking the
+                             // engine. advancingByEngine blocks the
+                             // currentIndexChanged → audio.playAt path.
+                             if (streamingTrackIdx >= 0
+                                 && streamingTrackIdx < playlist.count())
+                             {
+                                 advancingByEngine = true;
+                                 playlist.setCurrentIndex(streamingTrackIdx);
+                                 advancingByEngine = false;
+                             }
+                         } else if (playlist.count() > 0) {
+                             // Preview already done / never streamed
+                             // (user navigated away). Cold-open start.
+                             playlist.setCurrentIndex(0);
+                             audio.play();
+                         }
                      });
 
     QQmlApplicationEngine engine;

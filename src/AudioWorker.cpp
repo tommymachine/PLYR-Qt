@@ -291,7 +291,7 @@ void AudioWorker::enqueueAt(int playlistIndex, const QUrl& url)
 }
 
 
-void AudioWorker::startPreviewStream(qint64 totalDurationMs)
+void AudioWorker::startPreviewStream(qint64 totalDurationMs, qint64 startOffsetMs)
 {
     Q_ASSERT(QThread::currentThread() == thread());
 
@@ -314,8 +314,17 @@ void AudioWorker::startPreviewStream(qint64 totalDurationMs)
     // durationMs comes from the disc TOC ((leadOut - firstTrack)/75 × 1000),
     // so the scrubber + duration label work the same as during a
     // normal QAudioDecoder playback.
+    //
+    // On resume (startOffsetMs > 0), the read picks up partway through
+    // the disc — so the first bytes the audio engine sees are NOT from
+    // disc-sector 0. We offset the position counter by setting the
+    // segment's startByte to a negative byte count corresponding to
+    // startOffsetMs. computePositionMs sees (pipeByte=0 − negativeStart)
+    // and reports the right disc-relative position from the first frame.
+    const qint64 bpms = bytesPerMs();
+    const qint64 offsetBytes = startOffsetMs * bpms;
     Segment s;
-    s.startByte     = 0;
+    s.startByte     = -offsetBytes;
     s.endByte       = -1;
     s.source        = QUrl(QStringLiteral("preview://cd-rip"));
     s.playlistIndex = -1;
@@ -327,7 +336,7 @@ void AudioWorker::startPreviewStream(qint64 totalDurationMs)
     m_currentSource = s.source;
     emit workerSourceChanged(s.source);
     emit workerDurationChanged(totalDurationMs);
-    emit workerPositionChanged(0);
+    emit workerPositionChanged(startOffsetMs);
 
     m_previewStreamActive = true;
     startSinkIfNeeded();
@@ -594,6 +603,19 @@ void AudioWorker::onSinkStateChanged(QtAudio::State state)
     }
 
     if (state == QtAudio::IdleState) {
+        // Streaming preview is an open-ended source — the RipWorker
+        // keeps pushing CDDA chunks as the disc reads. Pipe gaps
+        // between chunks are EXPECTED, not "track ended". Re-kick the
+        // sink so it picks up the next chunk and keep m_playing /
+        // position timer running. Otherwise the SCANCERTO transport
+        // would freeze the moment the worker pauses for a millisecond
+        // (which it does between reads).
+        if (m_previewStreamActive) {
+            m_sinkStarted = false;
+            startSinkIfNeeded();
+            return;
+        }
+
         const bool moreToCome =
             !m_queue.isEmpty() ||
             (m_currentSegmentIndex + 1 < m_segments.size()) ||

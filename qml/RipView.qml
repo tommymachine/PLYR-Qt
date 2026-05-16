@@ -31,6 +31,11 @@ Popup {
     property color veryMuted:   Qt.rgba(1.0, 1.0, 1.0, 0.25)
     property color subtleLine:  Qt.rgba(1.0, 1.0, 1.0, 0.10)
 
+    // Hoist the `fft` context property so the track-list delegate can
+    // pass it down to PlayingBars unambiguously (bare-name `fft`
+    // lookup in a delegate scope is unreliable).
+    readonly property var fftRef: fft
+
     // Recents + volumes list passed through to the save picker. Host
     // (Main.qml) supplies these so they stay reactive.
     property var saveRecents: []
@@ -53,6 +58,44 @@ Popup {
     // resolve in scope.
     readonly property bool _audioReady:
         playlist.hasCurrent || _previewActive
+
+    // During streaming preview the AudioEngine treats the whole disc as
+    // one synthetic segment: `audio.duration` is the disc total and
+    // `audio.position` is time-since-stream-start. The mini-transport
+    // below would otherwise show "0:23 / 73:18" of the disc; we want
+    // "0:23 / 4:32" of the current track. We already know per-track
+    // durations + startFraction/endFraction from the TOC the moment
+    // streaming kicks off, so we can derive a per-track view here.
+    //
+    // When streaming is NOT active (post-save FLAC playback), the
+    // engine itself exposes per-track values and these fall through
+    // to the raw audio.* numbers via the -1 / fallback branches.
+    readonly property int _streamTrackIndex: {
+        if (!_previewActive || audio.duration <= 0) return -1
+        const rows = ripper.tracks
+        if (!rows || rows.length === 0) return -1
+        const frac = audio.position / audio.duration
+        for (let i = 0; i < rows.length; ++i) {
+            const sf = rows[i].startFraction
+            const ef = rows[i].endFraction
+            if (sf === undefined || ef === undefined || ef <= sf) continue
+            if (frac >= sf && frac < ef) return i
+        }
+        // Past the last endFraction (race at disc end) — clamp.
+        return rows.length - 1
+    }
+    readonly property real _streamTrackStartMs:
+        _streamTrackIndex >= 0 && audio.duration > 0
+            ? ripper.tracks[_streamTrackIndex].startFraction * audio.duration
+            : 0
+    readonly property real _trackDurationMs:
+        _streamTrackIndex >= 0
+            ? (ripper.tracks[_streamTrackIndex].durationSec || 0) * 1000
+            : audio.duration
+    readonly property real _trackPositionMs:
+        _streamTrackIndex >= 0
+            ? Math.max(0, audio.position - _streamTrackStartMs)
+            : audio.position
 
     background: Rectangle {
         color: "black"
@@ -397,12 +440,6 @@ Popup {
                         font.bold: true
                         wrapMode: Text.WordWrap
                     }
-                    // Skip-disc hint: in a batch, any disc from the set
-                    // is accepted (we identify via MB and look up the
-                    // disc's actual position). Out-of-set discs fall
-                    // through to a normal "where do you want to save it"
-                    // prompt because they don't belong in the batch
-                    // folder.
                     Text {
                         visible: ripper.inBatch
                         Layout.fillWidth: true
@@ -434,6 +471,70 @@ Popup {
                             hoverEnabled: true
                             cursorShape: Qt.PointingHandCursor
                             onClicked: ripper.skipCurrentDisc()
+                        }
+                    }
+
+                    // Breathing room between the call-to-action and the
+                    // set-context recap.
+                    Item {
+                        visible: ripper.inBatch
+                        Layout.preferredHeight: 28
+                    }
+
+                    // Set context: album / artist / disc-N-of-M /
+                    // save folder. Lets the user confirm which batch
+                    // they're being asked to feed before swapping
+                    // discs. Visible only inside a batch — out-of-set
+                    // discs go through the full disc-identify flow
+                    // and don't need the recap.
+                    ColumnLayout {
+                        visible: ripper.inBatch
+                        Layout.alignment: Qt.AlignHCenter
+                        Layout.preferredWidth: Math.min(parent.width - 64, 520)
+                        spacing: 2
+
+                        Text {
+                            Layout.fillWidth: true
+                            horizontalAlignment: Text.AlignHCenter
+                            visible: ripper.batchAlbumTitle !== ""
+                            text: ripper.batchAlbumTitle
+                            color: ripView.primary
+                            font.pixelSize: 14
+                            font.bold: true
+                            wrapMode: Text.WordWrap
+                            maximumLineCount: 2
+                            elide: Text.ElideRight
+                        }
+                        Text {
+                            Layout.fillWidth: true
+                            horizontalAlignment: Text.AlignHCenter
+                            visible: ripper.batchArtist !== ""
+                            text: ripper.batchArtist
+                            color: ripView.accent
+                            font.pixelSize: 12
+                            wrapMode: Text.WordWrap
+                            elide: Text.ElideRight
+                        }
+                        Text {
+                            Layout.fillWidth: true
+                            horizontalAlignment: Text.AlignHCenter
+                            text: "Disc " + ripper.batchExpectedDisc
+                                + " of " + ripper.batchTotalCount
+                                + "  ·  " + ripper.batchDoneCount
+                                + " saved"
+                            color: ripView.muted
+                            font.pixelSize: 10
+                            font.family: "Menlo"
+                        }
+                        Text {
+                            Layout.fillWidth: true
+                            horizontalAlignment: Text.AlignHCenter
+                            visible: ripper.batchParentFolder !== ""
+                            text: "→ " + ripper.batchParentFolder
+                            color: ripView.veryMuted
+                            font.pixelSize: 9
+                            font.family: "Menlo"
+                            elide: Text.ElideMiddle
                         }
                     }
                 }
@@ -616,17 +717,20 @@ Popup {
                     PLYRSeekSlider {
                         Layout.fillWidth: true
                         Layout.preferredHeight: 20
-                        enabled: ripView._audioReady && audio.duration > 0
+                        enabled: ripView._audioReady && ripView._trackDurationMs > 0
                         from: 0
-                        to:   Math.max(1, audio.duration / 1000.0)
-                        value: audio.position / 1000.0
-                        onMoved: (newValue) => audio.seek(newValue * 1000)
+                        to:   Math.max(1, ripView._trackDurationMs / 1000.0)
+                        value: ripView._trackPositionMs / 1000.0
+                        // Seek targets the disc-absolute position: offset the
+                        // per-track value by the current track's start.
+                        onMoved: (newValue) =>
+                            audio.seek(ripView._streamTrackStartMs + newValue * 1000)
                     }
 
                     Text {
-                        text: ripView.fmtTime(audio.position / 1000.0)
+                        text: ripView.fmtTime(ripView._trackPositionMs / 1000.0)
                              + " / "
-                             + ripView.fmtTime(audio.duration / 1000.0)
+                             + ripView.fmtTime(ripView._trackDurationMs / 1000.0)
                         color: ripView.muted
                         font.family: "Menlo"
                         font.pixelSize: 9
@@ -645,10 +749,16 @@ Popup {
                     spacing: 0
                     boundsBehavior: Flickable.StopAtBounds
 
-                    // Auto-scroll: when the currently-active track
-                    // changes, smooth-scroll so the row sits in the
-                    // middle of the viewport. Uses the same probe-then-
-                    // animate pattern the main playlist uses (Main.qml).
+                    // Auto-scroll: only when the currently-scanning track
+                    // *number* changes (not on every progress tick). Keeps
+                    // the active track visible across track boundaries
+                    // while leaving the user free to scroll within a
+                    // single track. `currentTrackNumber` shares the
+                    // `progressChanged` NOTIFY with the per-tick progress
+                    // scalars, so we throttle by binding through a local
+                    // int property — the binding re-evaluates on every
+                    // progress tick but the `onChanged` signal only fires
+                    // when the integer value actually differs.
                     SmoothedAnimation {
                         id: trackScroll
                         target: trackList
@@ -669,10 +779,8 @@ Popup {
                             trackScroll.start()
                         })
                     }
-                    Connections {
-                        target: ripper
-                        function onProgressChanged() { trackList.centerOnCurrent() }
-                    }
+                    property int scanningTrack: ripper.currentTrackNumber
+                    onScanningTrackChanged: centerOnCurrent()
 
                     delegate: Rectangle {
                         id: trackRow
@@ -811,32 +919,55 @@ Popup {
                                 font.family: "Menlo"; font.pixelSize: 10
                                 horizontalAlignment: Text.AlignRight
                             }
-                            Text {
+                            Item {
                                 Layout.preferredWidth: 16
-                                text: {
-                                    if (trackRow.isReadingThis) return "💿"
-                                    if (trackRow.isPlayingHere)
-                                        return audio.playing ? "▶" : "❚❚"
-                                    const st = modelData.status || ""
-                                    if (st === "ok")       return "✓"
-                                    if (st === "warn")     return "⚠"
-                                    if (st === "fail")     return "✕"
-                                    if (st === "reading")  return "💿"
-                                    if (st === "encoded")  return "·"
-                                    if (st === "read")     return "·"
-                                    return ""
+                                Layout.preferredHeight: 14
+
+                                // "Now playing" indicator: animated bars
+                                // when this row is the audio source and
+                                // playback is active. Otherwise the icon
+                                // slot shows the appropriate ▶ / 💿 /
+                                // status glyph.
+                                readonly property bool _showBars:
+                                    trackRow.isPlayingHere
+                                    && audio.playing
+                                    && !trackRow.isReadingThis
+
+                                PlayingBars {
+                                    anchors.centerIn: parent
+                                    visible: parent._showBars
+                                    fft: ripView.fftRef
+                                    height: 12
                                 }
-                                color: {
-                                    if (trackRow.isReadingThis) return ripView.accent
-                                    if (trackRow.isPlayingHere) return ripView.accent
-                                    const st = modelData.status || ""
-                                    if (st === "ok")   return ripView.accent
-                                    if (st === "warn") return Qt.rgba(1.0, 0.78, 0.30, 0.95)
-                                    if (st === "fail") return Qt.rgba(1.0, 0.45, 0.42, 0.95)
-                                    return ripView.veryMuted
+
+                                Text {
+                                    anchors.centerIn: parent
+                                    visible: !parent._showBars
+                                    text: {
+                                        if (trackRow.isReadingThis) return "💿"
+                                        if (trackRow.isPlayingHere)
+                                            return audio.playing ? "" : "▶"
+                                        const st = modelData.status || ""
+                                        if (st === "ok")       return "✓"
+                                        if (st === "warn")     return "⚠"
+                                        if (st === "fail")     return "✕"
+                                        if (st === "reading")  return "💿"
+                                        if (st === "encoded")  return "·"
+                                        if (st === "read")     return "·"
+                                        return ""
+                                    }
+                                    color: {
+                                        if (trackRow.isReadingThis) return ripView.accent
+                                        if (trackRow.isPlayingHere) return ripView.accent
+                                        const st = modelData.status || ""
+                                        if (st === "ok")   return ripView.accent
+                                        if (st === "warn") return Qt.rgba(1.0, 0.78, 0.30, 0.95)
+                                        if (st === "fail") return Qt.rgba(1.0, 0.45, 0.42, 0.95)
+                                        return ripView.veryMuted
+                                    }
+                                    font.pixelSize: 11
+                                    horizontalAlignment: Text.AlignHCenter
                                 }
-                                font.pixelSize: 11
-                                horizontalAlignment: Text.AlignHCenter
                             }
                             Text {
                                 Layout.fillWidth: true

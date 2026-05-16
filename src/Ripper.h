@@ -100,6 +100,7 @@ public:
     // ---- Batch context --------------------------------------------
     bool    inBatch() const              { return m_inBatch; }
     QString batchAlbumTitle() const      { return m_batchAlbumTitle; }
+    QString batchArtist() const          { return m_batch.artist; }
     int     batchDoneCount() const       { return m_batchDoneCount; }
     int     batchTotalCount() const      { return m_batchTotalCount; }
     int     batchExpectedDisc() const    { return m_batchExpectedDisc; }
@@ -142,6 +143,7 @@ public:
 
     Q_PROPERTY(bool     inBatch         READ inBatch         NOTIFY batchChanged)
     Q_PROPERTY(QString  batchAlbumTitle READ batchAlbumTitle NOTIFY batchChanged)
+    Q_PROPERTY(QString  batchArtist     READ batchArtist     NOTIFY batchChanged)
     Q_PROPERTY(int      batchDoneCount  READ batchDoneCount  NOTIFY batchChanged)
     Q_PROPERTY(int      batchTotalCount READ batchTotalCount NOTIFY batchChanged)
     Q_PROPERTY(int      batchExpectedDisc READ batchExpectedDisc NOTIFY batchChanged)
@@ -212,7 +214,7 @@ signals:
     // Live raw-PCM preview signals. These get wired to the AudioEngine
     // streaming slots in main.cpp; the user hears CDDA bytes within
     // ~2 s of insertion — drive spin-up + first 27-sector read.
-    void previewStreamStart(qint64 totalDurationMs);
+    void previewStreamStart(qint64 totalDurationMs, qint64 startOffsetMs);
     void previewPcm(QByteArray int16Bytes);
     void previewStreamStop();
 
@@ -230,6 +232,7 @@ private slots:
     void onDiscIdentified(QVariantMap info);
     void onMbResolved(QVariantMap match);
     void onMbUnavailable();
+    void onRipStarting(QString tempDir);
     void onReadStarted();
     void onReadProgress(int currentLba, double secPerSec, double multiplier,
                         int etaSec, int currentTrackNumber, double readFraction);
@@ -263,6 +266,14 @@ private:
     QString    m_suggestedFolderName;       // populated by readyToSave
     QString    m_currentReleaseGroupId;     // for batch lookup at save time
     QString    m_currentDiscPlaybackPath;   // playlist's rip-folder root
+    QString    m_resumeTempDir;             // non-empty when startSession
+                                            // loaded a batch with an
+                                            // in_progress disc; handed to
+                                            // doRip if the inserted disc
+                                            // matches its mbDiscId.
+    QString    m_resumeMbDiscId;            // mbDiscId of the in-progress
+                                            // disc, used to gate the
+                                            // resume on the inserted disc
 
     // Batch context — persisted via RipBatchStore.
     RipBatch m_batch;       // empty when m_inBatch == false

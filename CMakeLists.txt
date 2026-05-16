@@ -141,6 +141,7 @@ qt_add_qml_module(plyr_qt
         qml/MainMobile.qml
         qml/PLYRSeekSlider.qml
         qml/MarqueeText.qml
+        qml/PlayingBars.qml
         qml/EqPanel.qml
         qml/EqBandSlider.qml
         qml/EqPresetChip.qml

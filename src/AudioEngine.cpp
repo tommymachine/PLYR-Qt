@@ -119,7 +119,8 @@ void AudioEngine::seek(qint64 ms)                             { emit requestSeek
 void AudioEngine::playAt(int idx, const QUrl& url)            { emit requestPlayAt(idx, url); }
 void AudioEngine::enqueueAt(int idx, const QUrl& url)         { emit requestEnqueueAt(idx, url); }
 
-void AudioEngine::startPreviewStream(qint64 totalDurationMs)  { emit requestStartPreviewStream(totalDurationMs); }
+void AudioEngine::startPreviewStream(qint64 totalDurationMs, qint64 startOffsetMs)
+{ emit requestStartPreviewStream(totalDurationMs, startOffsetMs); }
 void AudioEngine::pushPreviewPcm(const QByteArray& bytes)     { emit requestPushPreviewPcm(bytes); }
 void AudioEngine::stopPreviewStream()                         { emit requestStopPreviewStream(); }
 

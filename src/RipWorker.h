@@ -56,8 +56,23 @@ public slots:
     // Empty means "use the AppSupport temp area + prompt to save at
     // the end" (the old behavior, kept for standalone rips and the
     // first disc of a brand-new batch).
+    //
+    // `resumeTempDir`, when non-empty, points at the temp dir of a
+    // previous force-quit rip. The worker reuses it (preserving
+    // already-encoded track_NN.flac files), decodes those FLACs back
+    // into the disc buffer at their offset-corrected positions, and
+    // starts the read at the first incomplete track's LBA. If the
+    // path doesn't exist a fresh temp dir is created and a warning
+    // is emitted.
+    //
+    // `resumeMbDiscId` is the MusicBrainz disc id the temp dir was
+    // produced from. When the inserted disc's computed id doesn't
+    // match (different disc inserted under the same batch), the
+    // worker discards the resume and rips fresh into a new temp dir.
     void doRip(const QString& bsdName,
-               const QString& preferredParentFolder = {});
+               const QString& preferredParentFolder = {},
+               const QString& resumeTempDir = {},
+               const QString& resumeMbDiscId = {});
 
     // Move the rip-in-progress temp dir into `parentFolder/folderName`.
     // Both must be valid and non-empty; the folder name is auto-derived
@@ -94,6 +109,11 @@ signals:
     void mbResolved(QVariantMap match);
     void mbUnavailable();
 
+    // Emitted once after the temp dir is created (or reused), at the
+    // start of doRip(). Lets the Ripper persist the path to the batch
+    // JSON so a force-quit mid-rip is resumable.
+    void ripStarting(QString tempDir);
+
     // ---- Read phase --------------------------------------------------
     // Fired once at the start of the read loop so the Ripper can switch
     // state Identifying -> Reading.
@@ -122,7 +142,11 @@ signals:
     // from the TOC; the AudioEngine uses it to populate the synthetic
     // segment's durationMs so the seek slider + duration label work
     // identically to file playback.
-    void previewStreamStart(qint64 totalDurationMs);
+    // `startOffsetMs` is the position the stream begins at within the
+    // disc — non-zero on resume, when the read picks up partway through
+    // the disc and the audio engine's position counter must reflect
+    // that disc-relative offset (not start at 0).
+    void previewStreamStart(qint64 totalDurationMs, qint64 startOffsetMs);
     void previewPcm(QByteArray int16Bytes);
     void previewStreamStop();
 

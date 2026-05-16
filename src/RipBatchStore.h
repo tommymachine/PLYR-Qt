@@ -33,9 +33,16 @@
 //     "discs": [
 //       { "position": 1, "mb_disc_id": "...", "status": "done",
 //         "saved_path": ".../Disc_01" },
-//       { "position": 2, "status": "pending" } ],
+//       { "position": 2, "status": "in_progress",
+//         "temp_dir": ".../rip_in_progress/<uuid>",
+//         "mb_disc_id": "..." },
+//       { "position": 3, "status": "pending" } ],
 //     "created_at":            "2026-05-12T...",
 //     "updated_at":            "2026-05-15T..." }
+//
+// `temp_dir` is set when a disc is mid-rip so a force-quit + restart can
+// reuse the existing FLACs instead of re-ripping from track 1. Cleared
+// once the disc transitions back to "done" or "pending".
 #pragma once
 
 #include <QDateTime>
@@ -51,6 +58,11 @@ struct RipBatchDisc {
     QString mbDiscId;              // MusicBrainz disc id (empty until ripped)
     QString status      = QStringLiteral("pending");
     QString savedPath;             // absolute path to the disc's folder
+    QString tempDir;               // absolute path to the in-progress
+                                   // rip dir while status == "in_progress";
+                                   // empty otherwise. Lets a force-quit +
+                                   // restart resume mid-disc instead of
+                                   // re-ripping from track 1.
 };
 
 struct RipBatch {
@@ -81,6 +93,15 @@ public:
     // this returns the most-recently-updated one.
     static std::optional<RipBatch> lookupByReleaseGroup(
         const QString& releaseGroupId,
+        const QString& root = defaultRoot());
+
+    // Look up by MusicBrainz disc id, matching against any disc within
+    // any batch. Used when the same single-disc CD is re-inserted and we
+    // need to find its (possibly resumable) batch even though the
+    // release-group lookup didn't apply. Picks the most-recently-updated
+    // match if more than one batch contains the same disc id.
+    static std::optional<RipBatch> lookupByDiscId(
+        const QString& mbDiscId,
         const QString& root = defaultRoot());
 
     // List every batch on disk that has at least one pending disc, in

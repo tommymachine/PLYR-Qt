@@ -6,6 +6,7 @@
 #include "ArVerify.h"
 #include "CdDevice.h"
 #include "DriveOffsetDb.h"
+#include "FlacDecode.h"
 #include "FlacEncode.h"
 #include "MusicBrainz.h"
 
@@ -28,7 +29,9 @@
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
+#include <fstream>
 #include <memory>
+#include <set>
 #include <span>
 #include <string>
 #include <vector>
@@ -45,6 +48,14 @@ constexpr const char* kUserAgent       = "Concerto-Ripper/0.1";
 // big enough that ioctl round-trip is amortized, small enough that any
 // SCSI / USB transfer cap is honored.
 constexpr uint32_t kReadChunkSectors = 27;
+
+// Raw-sectors sidecar written incrementally during the read loop. Each
+// 2352-byte sector goes in at the position it was read, with no offset
+// correction. Lets a force-quit mid-rip resume at LBA granularity instead
+// of having to re-read tracks that hadn't finished encoding yet. The
+// design brief lives in the project memory under "PLYR-Qt CD ripper
+// direction" — search for the "LBA-granular resume" section.
+constexpr const char* kRawSidecarName = "cd_rip.raw";
 
 // Synchronous HTTP GET on the worker thread. Spins a nested event loop
 // on `nam` so the worker stays responsive to its own queued events
@@ -390,7 +401,9 @@ void RipWorker::discardStagedRip() {
 }
 
 void RipWorker::doRip(const QString& bsdName,
-                      const QString& preferredParentFolder) {
+                      const QString& preferredParentFolder,
+                      const QString& resumeTempDir,
+                      const QString& resumeMbDiscId) {
     // Reset the per-rip cancel flag — the GUI may have set it during the
     // previous disc; the new rip starts fresh.
     m_cancel.store(false, std::memory_order_release);
@@ -559,38 +572,237 @@ void RipWorker::doRip(const QString& bsdName,
     }
 
     QString tempDir;
-    if (!preferredParentFolder.isEmpty() && !suggestedName.isEmpty()) {
-        // Disambiguate if a folder with that name already exists in
-        // the parent — append " (N)" suffix until we find a free spot.
-        QString candidate = preferredParentFolder
-            + QStringLiteral("/") + suggestedName;
-        if (QDir(candidate).exists()) {
-            for (int n = 2; n < 1000; ++n) {
-                const QString alt = preferredParentFolder
-                    + QStringLiteral("/")
-                    + suggestedName
-                    + QStringLiteral(" (%1)").arg(n);
-                if (!QDir(alt).exists()) {
-                    candidate = alt;
-                    suggestedName = QString("%1 (%2)").arg(suggestedName).arg(n);
-                    break;
+    bool reusingTempDir = false;
+    // Honor the resume only if the inserted disc's mbDiscId matches the
+    // saved batch's expectation. A mismatch means the user inserted a
+    // different disc under the same batch (likely the next pending one)
+    // — start fresh and let the Ripper observe in_progress -> done on
+    // save like any normal rip.
+    const QString computedMbDiscId =
+        QString::fromStdString(ids.musicBrainzDiscId);
+    const bool discIdMatches =
+        !resumeMbDiscId.isEmpty() && computedMbDiscId == resumeMbDiscId;
+    if (!resumeTempDir.isEmpty() && !discIdMatches) {
+        qWarning("RipWorker: ignoring resume tempDir, disc id mismatch "
+                 "(saved=%s inserted=%s)",
+                 resumeMbDiscId.toUtf8().constData(),
+                 computedMbDiscId.toUtf8().constData());
+    } else if (!resumeTempDir.isEmpty() && QDir(resumeTempDir).exists()) {
+        // Resume path: reuse the previous attempt's dir so the existing
+        // track_NN.flac files are preserved. The original suggestedName
+        // is not honored here — whatever the prior dir is called wins,
+        // and doSave will move/rename it at the end if needed. See the
+        // brief: "preferredParentFolder conflict" is intentional.
+        tempDir = resumeTempDir;
+        reusingTempDir = true;
+    }
+    if (tempDir.isEmpty()) {
+        if (!resumeTempDir.isEmpty() && discIdMatches) {
+            // The persisted path is gone (user emptied trash, moved the
+            // dir, etc.). Fall back to a fresh rip and tell the user.
+            emit warning(QStringLiteral(
+                "Resume directory missing — starting over:\n%1").arg(resumeTempDir));
+        }
+        if (!preferredParentFolder.isEmpty() && !suggestedName.isEmpty()) {
+            // Disambiguate if a folder with that name already exists in
+            // the parent — append " (N)" suffix until we find a free spot.
+            QString candidate = preferredParentFolder
+                + QStringLiteral("/") + suggestedName;
+            if (QDir(candidate).exists()) {
+                for (int n = 2; n < 1000; ++n) {
+                    const QString alt = preferredParentFolder
+                        + QStringLiteral("/")
+                        + suggestedName
+                        + QStringLiteral(" (%1)").arg(n);
+                    if (!QDir(alt).exists()) {
+                        candidate = alt;
+                        suggestedName = QString("%1 (%2)").arg(suggestedName).arg(n);
+                        break;
+                    }
                 }
             }
+            tempDir = candidate;
+        } else {
+            const QString rootData = QStandardPaths::writableLocation(
+                QStandardPaths::GenericDataLocation);
+            const QString uuid = QUuid::createUuid().toString(QUuid::WithoutBraces)
+                                     .remove(QChar('-'));
+            tempDir = rootData
+                + QStringLiteral("/Concerto/rip_in_progress/") + uuid;
         }
-        tempDir = candidate;
-    } else {
-        const QString rootData = QStandardPaths::writableLocation(
-            QStandardPaths::GenericDataLocation);
-        const QString uuid = QUuid::createUuid().toString(QUuid::WithoutBraces)
-                                 .remove(QChar('-'));
-        tempDir = rootData
-            + QStringLiteral("/Concerto/rip_in_progress/") + uuid;
     }
     if (!QDir().mkpath(tempDir)) {
         emit failed(QStringLiteral("Couldn't create temp directory:\n%1").arg(tempDir));
         return;
     }
     m_currentTempDir = tempDir;
+    emit ripStarting(tempDir);
+
+    // LBA-granular resume: load any existing cd_rip.raw into the disc
+    // buffer BEFORE looking at the FLACs. The raw file is appended
+    // sector-by-sector during the read loop; on resume its size tells
+    // us exactly which LBAs were already read. See the design brief
+    // (memory: "LBA-granular resume").
+    //
+    // Math walk: if existingBytes = 1000 * 2352, then 1000 sectors were
+    // read. Those bytes were written sequentially to the file as they
+    // landed in disc[mainStart .. mainStart + 1000*2352). On resume we
+    // load them back into the same region; lba = firstLba + 1000,
+    // writeAt = mainStart + 1000*2352, readSoFar = 1000, remaining =
+    // totalSectors - 1000. Symmetric with the write path.
+    uint32_t rawSectorsRead = 0;
+    uint64_t rawBytesLoaded = 0;
+    const QString rawPath = tempDir + QStringLiteral("/")
+                            + QString::fromLatin1(kRawSidecarName);
+    if (reusingTempDir && QFile::exists(rawPath)) {
+        const qint64 fsize = QFileInfo(rawPath).size();
+        if (fsize > 0) {
+            // Round down: a force-quit mid-chunk-write can leave a
+            // partial trailing sector. We re-read those bytes rather
+            // than trust them.
+            uint64_t bytes = static_cast<uint64_t>(fsize);
+            bytes = (bytes / 2352) * 2352;
+            const uint64_t mainCapacity = paddedBytes - mainStart;
+            if (bytes > mainCapacity) {
+                // Should never happen — a raw file bigger than the main
+                // region means the TOC changed under us. Treat as
+                // corrupt and start fresh.
+                qWarning("RipWorker: cd_rip.raw oversized (%llu > %llu); "
+                         "ignoring and starting over.",
+                         static_cast<unsigned long long>(bytes),
+                         static_cast<unsigned long long>(mainCapacity));
+            } else {
+                std::ifstream raw(rawPath.toStdString(),
+                                  std::ios::binary);
+                if (raw) {
+                    raw.read(reinterpret_cast<char*>(disc.data() + mainStart),
+                             static_cast<std::streamsize>(bytes));
+                    const std::streamsize got = raw.gcount();
+                    if (got > 0) {
+                        rawBytesLoaded = static_cast<uint64_t>(got);
+                        rawSectorsRead = static_cast<uint32_t>(
+                            rawBytesLoaded / 2352);
+                        // Trim to whole sectors again in case read was short.
+                        rawBytesLoaded = uint64_t{rawSectorsRead} * 2352;
+                    }
+                }
+                // Trim any torn trailing partial sector on disk so the
+                // append-mode writes below resume at a clean boundary.
+                // If we left a fractional sector behind, the next
+                // force-quit would compute the wrong resume LBA from
+                // file size.
+                if (rawBytesLoaded < static_cast<uint64_t>(fsize)) {
+                    std::error_code ec;
+                    std::filesystem::resize_file(
+                        rawPath.toStdString(), rawBytesLoaded, ec);
+                }
+            }
+        }
+    }
+
+    // Open the raw sidecar for appending. Same handle is reused for
+    // every chunk write in the read loop — no allocations in the hot
+    // path. We flush after every chunk: drive throughput tops out around
+    // 1–2 MB/s, so the disk-write rate is well below what an SSD can
+    // absorb, and a per-chunk flush keeps the force-quit data loss
+    // window to the last chunk (~360 ms of audio) instead of whatever
+    // the OS's writeback cadence happens to be.
+    std::ofstream rawFile(rawPath.toStdString(),
+                          std::ios::binary | std::ios::out | std::ios::app);
+    if (!rawFile) {
+        qWarning("RipWorker: couldn't open cd_rip.raw for append at %s",
+                 rawPath.toUtf8().constData());
+        // Non-fatal — the rip still works without LBA-granular resume.
+    }
+
+    // Resume scan: enumerate existing track_NN.flac files in tempDir,
+    // decode each one back into the disc buffer at its offset-corrected
+    // position so the end-of-rip AR/CTDB verification can run against
+    // the full buffer. Tracks that decode successfully are skipped by
+    // the read loop. Decode failures are silently re-ripped (the FLAC
+    // is treated as not-present) — never fail the resume because a
+    // saved track is corrupt.
+    //
+    // When cd_rip.raw covers a track's offset-corrected byte range we
+    // skip the FLAC decode (the raw bytes are already in the buffer)
+    // but still emit `encodedTrack` so the playlist sees it.
+    std::set<int> alreadyEncoded;
+    if (reusingTempDir) {
+        QDir dir(tempDir);
+        const auto entries = dir.entryList(
+            QStringList{QStringLiteral("track_*.flac")}, QDir::Files);
+        const QRegularExpression rx(QStringLiteral("^track_(\\d+)\\.flac$"));
+        for (const auto& name : entries) {
+            const auto m = rx.match(name);
+            if (!m.hasMatch()) continue;
+            const int trackNumber = m.captured(1).toInt();
+            // Find this trackNumber in the TOC. If it doesn't match
+            // (different disc inserted under the same temp dir somehow),
+            // skip and let the regular read handle it.
+            size_t trackIdx = toc.tracks.size();
+            for (size_t i = 0; i < toc.tracks.size(); ++i) {
+                if (int(toc.tracks[i].trackNumber) == trackNumber) {
+                    trackIdx = i; break;
+                }
+            }
+            if (trackIdx >= toc.tracks.size()) continue;
+
+            const QString flacPath = dir.absoluteFilePath(name);
+
+            // Offset-corrected destination — same math tryEncodeReadyTracks
+            // uses to decide where each track's PCM is located:
+            //   byteIdx = mainStart                  (skip the head pad)
+            //           + (startLba - firstLba) * 2352   (LBA offset)
+            //           + driveOffset * 4                (per-sample 4-byte
+            //                                            stereo-16 offset)
+            const auto& t = toc.tracks[trackIdx];
+            const uint32_t nextLba  = (trackIdx + 1 < toc.tracks.size())
+                                        ? toc.tracks[trackIdx + 1].startLba
+                                        : toc.leadOutLba;
+            const uint32_t startSec = t.startLba - toc.tracks.front().startLba;
+            const uint64_t trackFrames = uint64_t{nextLba - t.startLba} * 588;
+            const int64_t  byteIdx  = static_cast<int64_t>(mainStart)
+                                      + int64_t{startSec} * 2352
+                                      + int64_t{driveOffset} * 4;
+            const uint64_t trackEndByte = uint64_t(byteIdx) + trackFrames * 4;
+
+            // If the raw sidecar already covers this track's full byte
+            // range, the buffer is already populated from raw — skip the
+            // FLAC decode entirely. We still emit the encodedTrack signal
+            // so the playlist surfaces the saved file.
+            if (rawBytesLoaded > 0
+                && byteIdx >= static_cast<int64_t>(mainStart)
+                && trackEndByte <= mainStart + rawBytesLoaded)
+            {
+                alreadyEncoded.insert(trackNumber);
+                emit encodedTrack(trackNumber, flacPath);
+                continue;
+            }
+
+            const auto decoded = flacdecode::decodeFile(flacPath.toStdString());
+            if (!decoded || !decoded->info.isCdFormat()) {
+                // Treat as not-done; the read loop will re-rip the
+                // sectors covering this track and overwrite the FLAC.
+                continue;
+            }
+
+            const uint64_t framesBytes = decoded->frames * 4;
+            if (byteIdx < 0
+                || uint64_t(byteIdx) + framesBytes > disc.size())
+            {
+                // Out-of-bounds (TOC mismatch with the saved FLAC) —
+                // treat as not-done.
+                continue;
+            }
+            std::memcpy(disc.data() + byteIdx,
+                        decoded->pcm.data(),
+                        framesBytes);
+            alreadyEncoded.insert(trackNumber);
+            // Populate the playlist so the user sees the already-encoded
+            // tracks as soon as the resume starts.
+            emit encodedTrack(trackNumber, flacPath);
+        }
+    }
 
     emit readStarted();
     // The state machine stays in Reading for the whole read+inline-
@@ -608,19 +820,81 @@ void RipWorker::doRip(const QString& bsdName,
     // Pass the TOC-derived disc duration through so the audio engine
     // populates the synthetic segment's durationMs — that's what
     // drives the seek slider's range and the duration label.
+    //
+    // The actual emit is deferred until after the resume LBA is
+    // computed below — on resume we also need to pass the disc-
+    // relative startOffsetMs so the position counter starts at the
+    // right spot rather than at zero.
     const qint64 discDurationMs =
         (qint64(totalSectors) * 1000) / 75;
-    emit previewStreamStart(discDurationMs);
 
-    uint32_t remaining   = totalSectors;
-    int32_t  lba         = firstLba;
-    uint64_t writeAt     = mainStart;
-    uint32_t readSoFar   = 0;
+    // Resume hop: pick the LBA where the read loop starts.
+    //
+    // Two inputs:
+    //   * rawSectorsRead — bytes already in cd_rip.raw, sector-aligned.
+    //     Source of truth when non-zero.
+    //   * alreadyEncoded — tracks whose FLACs landed last time. Used
+    //     only when raw is absent (pre-raw-support resumes, or a fresh
+    //     attempt that never wrote any sectors).
+    //
+    // Buffer-byte-offset note: writeAt is the head-of-pad-aware byte
+    // position. (lba - firstLba) * 2352 advances writeAt one sector
+    // (2352 bytes) per LBA past firstLba, matching what one read-chunk
+    // iteration would advance had we started from the front.
+    size_t resumeTrackIdx = 0;
+    while (resumeTrackIdx < toc.tracks.size()
+           && alreadyEncoded.count(int(toc.tracks[resumeTrackIdx].trackNumber)))
+    {
+        ++resumeTrackIdx;
+    }
+
+    uint32_t resumeReadSoFar;
+    int32_t  resumeLba;
+    size_t   resumeCurrentTrackIdx;
+    if (rawSectorsRead > 0) {
+        // Raw is canonical — pick up exactly where the file ends.
+        resumeReadSoFar = rawSectorsRead;
+        resumeLba       = firstLba + static_cast<int32_t>(rawSectorsRead);
+        // Walk the TOC to find which track contains the resume LBA.
+        resumeCurrentTrackIdx = 0;
+        for (size_t i = 0; i < toc.tracks.size(); ++i) {
+            const uint32_t nextLba = (i + 1 < toc.tracks.size())
+                                       ? toc.tracks[i + 1].startLba
+                                       : toc.leadOutLba;
+            if (static_cast<uint32_t>(resumeLba) < nextLba) {
+                resumeCurrentTrackIdx = i;
+                break;
+            }
+            resumeCurrentTrackIdx = i;
+        }
+    } else {
+        // No raw → fall back to track-aligned resume.
+        resumeLba = (resumeTrackIdx < toc.tracks.size())
+            ? static_cast<int32_t>(toc.tracks[resumeTrackIdx].startLba)
+            : static_cast<int32_t>(toc.leadOutLba);
+        resumeReadSoFar       = uint32_t(resumeLba - firstLba);
+        resumeCurrentTrackIdx = std::min(resumeTrackIdx,
+                                         toc.tracks.size() - 1);
+    }
+
+    // Now we know how far in we're starting — kick off the streaming
+    // preview with both the disc total and the start offset. CDDA is
+    // 75 sectors/sec, so resumeReadSoFar sectors = N*1000/75 ms into
+    // the disc.
+    const qint64 startOffsetMs =
+        (qint64(resumeReadSoFar) * 1000) / 75;
+    emit previewStreamStart(discDurationMs, startOffsetMs);
+
+    uint32_t remaining   = totalSectors - resumeReadSoFar;
+    int32_t  lba         = resumeLba;
+    uint64_t writeAt     = mainStart + uint64_t{resumeReadSoFar} * 2352;
+    uint32_t readSoFar   = resumeReadSoFar;
     auto     milestoneT0 = std::chrono::steady_clock::now();
     uint32_t milestoneSectors = 0;
-    int      currentTrackNumber = toc.tracks.front().trackNumber;
-    size_t   currentTrackIndex  = 0;
-    size_t   encodedThrough     = 0;  // count of tracks already FLAC'd
+    int      currentTrackNumber =
+        int(toc.tracks[resumeCurrentTrackIdx].trackNumber);
+    size_t   currentTrackIndex  = resumeCurrentTrackIdx;
+    size_t   encodedThrough     = resumeTrackIdx;  // count of tracks already FLAC'd
 
     std::vector<ZeroFilledRange> zeroFilledRanges;
     std::string lastReadError;
@@ -634,10 +908,16 @@ void RipWorker::doRip(const QString& bsdName,
 
     // Encode every track whose offset-corrected byte range is now
     // fully resident in `disc`. `writtenBytes` is the highest byte
-    // index that's been read into the buffer (exclusive).
+    // index that's been read into the buffer (exclusive). Tracks
+    // already present in `alreadyEncoded` (resumed-from-disk) are
+    // counted as done without re-encoding.
     auto tryEncodeReadyTracks = [&](uint64_t writtenBytes) -> bool {
         while (encodedThrough < toc.tracks.size()) {
             const auto&    t        = toc.tracks[encodedThrough];
+            if (alreadyEncoded.count(int(t.trackNumber))) {
+                ++encodedThrough;
+                continue;
+            }
             const uint32_t nextLba  = (encodedThrough + 1 < toc.tracks.size())
                                         ? toc.tracks[encodedThrough + 1].startLba
                                         : toc.leadOutLba;
@@ -680,8 +960,12 @@ void RipWorker::doRip(const QString& bsdName,
 
     while (remaining > 0) {
         if (m_cancel.load(std::memory_order_acquire)) {
+            // Preserve the temp dir + cd_rip.raw + already-encoded
+            // FLACs so the user can resume from this point on next
+            // launch. Ripper::stopRip(deleteBatch=true) handles the
+            // explicit-delete path by invoking discardStagedRip
+            // itself after the worker comes to rest.
             emit previewStreamStop();
-            discardStagedRip();
             emit ripCancelled();
             return;
         }
@@ -711,6 +995,18 @@ void RipWorker::doRip(const QString& bsdName,
             emit warning(QStringLiteral(
                 "Zero-filled LBA %1..%2 (%3 sectors) — verifier will flag any affected track")
                 .arg(lba).arg(lba + int(n)).arg(n));
+        }
+
+        // Persist this chunk to cd_rip.raw so a force-quit can resume
+        // here. We write the zero-filled bytes too — the file's sector
+        // count must mirror the in-memory buffer's coverage so the load
+        // path on resume can use file size as ground truth. flush()
+        // forces the userland buffer to the OS; the kernel's writeback
+        // handles the rest.
+        if (rawFile) {
+            rawFile.write(reinterpret_cast<const char*>(view.data()),
+                          static_cast<std::streamsize>(view.size()));
+            rawFile.flush();
         }
 
         writeAt          += uint64_t{n} * 2352;
@@ -785,7 +1081,18 @@ void RipWorker::doRip(const QString& bsdName,
         std::string err;
         readWithRetry(*dev, static_cast<int32_t>(toc.leadOutLba),
                       padSectors, tail, wasZeroFilled, err);
-        if (!wasZeroFilled) writeAt += uint64_t{padSectors} * 2352;
+        if (!wasZeroFilled) {
+            writeAt += uint64_t{padSectors} * 2352;
+            // Persist the probe too so resume picks up the post-pad
+            // bytes for positive-offset drives. Skip when zero-filled
+            // — the in-memory zero-init already represents that on
+            // resume; no point persisting a zero block.
+            if (rawFile) {
+                rawFile.write(reinterpret_cast<const char*>(tail.data()),
+                              static_cast<std::streamsize>(tail.size()));
+                rawFile.flush();
+            }
+        }
     }
 
     // Eject so the user can swap in the next disc while we finish.
@@ -803,15 +1110,15 @@ void RipWorker::doRip(const QString& bsdName,
     if (!tryEncodeReadyTracks(paddedBytes)) return;
 
     if (m_cancel.load(std::memory_order_acquire)) {
+        // Preserve temp dir for resume — see comment in the read loop.
         emit previewStreamStop();
-        discardStagedRip();
         emit ripCancelled();
         return;
     }
     emit encodingComplete();
 
     if (m_cancel.load(std::memory_order_acquire)) {
-        discardStagedRip();
+        // Preserve temp dir for resume — see comment in the read loop.
         emit ripCancelled();
         return;
     }
@@ -960,6 +1267,19 @@ void RipWorker::doRip(const QString& bsdName,
     }
     emit verifyComplete(summary);
 
+    // The FLACs are now canonical (encoded and verified) so cd_rip.raw
+    // has no further job. Close the handle and unlink the file. If the
+    // user force-quits between here and doSave the worst case is that
+    // they re-run AR/CTDB on resume — which is cheap and avoids
+    // shipping a 700 MB raw blob into the saved album folder.
+    if (rawFile.is_open()) rawFile.close();
+    {
+        std::error_code ec;
+        std::filesystem::remove(rawPath.toStdString(), ec);
+        // Non-fatal if the unlink fails; the doSave belt-and-braces
+        // path will retry before the move.
+    }
+
     // --- Sidecars + ready-to-save -----------------------------------
     const double elapsedSec =
         std::chrono::duration<double>(
@@ -983,6 +1303,15 @@ void RipWorker::doSave(const QString& parentFolder, const QString& folderName) {
     }
     namespace fs = std::filesystem;
     const fs::path src(m_currentTempDir.toStdString());
+
+    // Belt-and-braces unlink of the raw sidecar. doRip already deletes
+    // it after verifyComplete, but if the user force-quit between the
+    // verify and now there could still be one on disk. Don't ship a
+    // hundreds-of-MB raw blob into the user's library.
+    {
+        std::error_code ec;
+        fs::remove(src / kRawSidecarName, ec);
+    }
 
     QString name = folderName;
     name.replace(QChar('/'), QChar('_'));

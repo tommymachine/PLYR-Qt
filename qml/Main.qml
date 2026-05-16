@@ -24,6 +24,11 @@ ApplicationWindow {
     readonly property color veryMuted:   Qt.rgba(1.0, 1.0, 1.0, 0.25)
     readonly property color subtleLine:  Qt.rgba(1.0, 1.0, 1.0, 0.10)
 
+    // Hoist the `fft` context property to a named root reference so the
+    // ListView delegate can pass it down to PlayingBars without bare-
+    // name lookup (which the delegate's model scope can shadow).
+    readonly property var fftRef: fft
+
     // Custom in-process folder picker. Replaces Qt's FolderDialog, which
     // was using its QML fallback implementation and was visibly slow to
     // open on macOS (the prewarm of NSOpenPanel didn't help — Qt wasn't
@@ -834,9 +839,23 @@ ApplicationWindow {
                             Item {
                                 Layout.preferredWidth: 24
                                 Layout.fillHeight: true
+
+                                // Active + playing → live FFT bars
+                                // (concerto's ocean→sky palette). Active +
+                                // paused → plain ▶. Inactive → 2-digit
+                                // track number.
+                                PlayingBars {
+                                    anchors.centerIn: parent
+                                    visible: row.current && root.isPlaying
+                                    fft: root.fftRef
+                                    height: 14
+                                    oceanColor: root.ocean
+                                    skyColor:   root.sky
+                                }
                                 Text {
                                     anchors.verticalCenter: parent.verticalCenter
                                     anchors.horizontalCenter: parent.horizontalCenter
+                                    visible: !(row.current && root.isPlaying)
                                     text: row.current
                                           ? "▶"
                                           : String(trackNumber).padStart(2, "0")

@@ -75,6 +75,8 @@ Ripper::Ripper(CdShield* shield, QObject* parent)
             this, &Ripper::onMbResolved);
     connect(m_worker, &RipWorker::mbUnavailable,
             this, &Ripper::onMbUnavailable);
+    connect(m_worker, &RipWorker::ripStarting,
+            this, &Ripper::onRipStarting);
     connect(m_worker, &RipWorker::readStarted,
             this, &Ripper::onReadStarted);
     connect(m_worker, &RipWorker::readProgress,
@@ -84,7 +86,9 @@ Ripper::Ripper(CdShield* shield, QObject* parent)
     connect(m_worker, &RipWorker::warning,
             this, [this](const QString& m) { emit warning(m); });
     connect(m_worker, &RipWorker::previewStreamStart,
-            this, [this](qint64 ms) { emit previewStreamStart(ms); });
+            this, [this](qint64 ms, qint64 off) {
+                emit previewStreamStart(ms, off);
+            });
     connect(m_worker, &RipWorker::previewPcm,
             this, [this](QByteArray b) { emit previewPcm(std::move(b)); });
     connect(m_worker, &RipWorker::previewStreamStop,
@@ -175,6 +179,8 @@ void Ripper::startSession(const QString& resumeBatchId) {
     resetDiscState();
     m_errorMessage.clear();
 
+    m_resumeTempDir.clear();
+    m_resumeMbDiscId.clear();
     if (!resumeBatchId.isEmpty()) {
         for (const auto& b : RipBatchStore::listResumable()) {
             if (b.id == resumeBatchId) {
@@ -190,6 +196,15 @@ void Ripper::startSession(const QString& resumeBatchId) {
                         ++resolved;
                     } else if (nextPending == 0) {
                         nextPending = d.position;
+                    }
+                    // Stash the in-progress disc's tempDir + mbDiscId so
+                    // the next doRip on this batch can resume from it.
+                    // (Only one disc can be in_progress per batch.)
+                    if (d.status == QStringLiteral("in_progress")
+                        && !d.tempDir.isEmpty())
+                    {
+                        m_resumeTempDir   = d.tempDir;
+                        m_resumeMbDiscId  = d.mbDiscId;
                     }
                 }
                 m_batchDoneCount    = resolved;
@@ -281,6 +296,13 @@ void Ripper::stopRip(bool deleteBatch) {
     }
 
     if (deleteBatch && !m_batch.id.isEmpty()) {
+        // Explicit-delete path: now that the worker no longer wipes
+        // the temp dir on cancel (so Resume later works), the delete
+        // case has to do it here. Queued so it runs after the read
+        // loop sees the cancel atomic and returns control to the
+        // worker thread's event loop.
+        QMetaObject::invokeMethod(m_worker, "discardStagedRip",
+                                  Qt::QueuedConnection);
         RipBatchStore::remove(m_batch.id);
         m_inBatch = false;
         m_batch   = {};
@@ -309,6 +331,25 @@ void Ripper::discardStagedRip() {
     if (m_state != State::SavePending) return;
     QMetaObject::invokeMethod(m_worker, "discardStagedRip",
                               Qt::QueuedConnection);
+    // The temp dir is being removed — revert the matching batch disc
+    // from "in_progress" to "pending" so a later restart doesn't try
+    // to resume from a deleted directory.
+    if (m_inBatch) {
+        bool changed = false;
+        for (auto& d : m_batch.discs) {
+            if (d.position == m_discPosition
+                && d.status == QStringLiteral("in_progress"))
+            {
+                d.status = QStringLiteral("pending");
+                d.tempDir.clear();
+                changed = true;
+                break;
+            }
+        }
+        if (changed && !m_batch.id.isEmpty()) {
+            RipBatchStore::save(m_batch);
+        }
+    }
     // Treat as a soft cancel — drop back to WaitingForDisc if we're in
     // a batch (so the disc can be re-ripped later), otherwise Idle.
     if (m_inBatch) {
@@ -406,9 +447,20 @@ void Ripper::onCdShieldDiscAppeared(const std::string& bsdName) {
     const QString preferredParent = (m_inBatch && !m_batch.parentFolder.isEmpty())
         ? m_batch.parentFolder
         : QString();
+    // Resume context: pass m_resumeTempDir + m_resumeMbDiscId straight
+    // through. The worker re-validates the inserted disc's id and
+    // discards the resume on mismatch — we can't gate here because the
+    // disc id isn't known until the worker reads the TOC.
     QMetaObject::invokeMethod(m_worker, "doRip", Qt::QueuedConnection,
                               Q_ARG(QString, m_currentBsdName),
-                              Q_ARG(QString, preferredParent));
+                              Q_ARG(QString, preferredParent),
+                              Q_ARG(QString, m_resumeTempDir),
+                              Q_ARG(QString, m_resumeMbDiscId));
+    // Single-shot — clear so the next disc-appeared (e.g. the user
+    // swaps in another disc later in a batch) doesn't try to resume
+    // into the same temp dir.
+    m_resumeTempDir.clear();
+    m_resumeMbDiscId.clear();
 }
 
 void Ripper::onCdShieldDiscDisappeared(const std::string& /*bsdName*/) {
@@ -454,15 +506,22 @@ void Ripper::onMbResolved(QVariantMap match) {
     m_currentReleaseGroupId = match.value("releaseGroupId").toString();
     m_tracks          = match.value("tracks").toList();
 
-    // Look up an existing batch for this release-group. If we're not
-    // already in a batch and this is a multi-disc release, create one
-    // implicitly so the resume flow has something to find later.
-    if (!m_inBatch
-        && m_discTotalCount > 1
-        && !m_currentReleaseGroupId.isEmpty())
-    {
-        const auto existing = RipBatchStore::lookupByReleaseGroup(
-            m_currentReleaseGroupId);
+    // Look up an existing batch for this disc. Create one implicitly
+    // otherwise — single-disc rips need a batch JSON too so a force-
+    // quit mid-rip is resumable. Lookup precedence:
+    //   1. Release-group id (multi-disc box sets, also single-disc rips
+    //      that report a release-group).
+    //   2. MusicBrainz disc id (catches single-disc CDs without a
+    //      release-group on the MB side).
+    if (!m_inBatch) {
+        std::optional<RipBatch> existing;
+        if (!m_currentReleaseGroupId.isEmpty()) {
+            existing = RipBatchStore::lookupByReleaseGroup(
+                m_currentReleaseGroupId);
+        }
+        if (!existing && !m_mbDiscId.isEmpty()) {
+            existing = RipBatchStore::lookupByDiscId(m_mbDiscId);
+        }
         if (existing) {
             m_batch = *existing;
             m_inBatch = true;
@@ -476,6 +535,10 @@ void Ripper::onMbResolved(QVariantMap match) {
             for (int i = 1; i <= m_discTotalCount; ++i) {
                 RipBatchDisc d;
                 d.position = i;
+                // Stamp the just-identified disc's MB id so a future
+                // resume of a single-disc CD can find this batch via
+                // lookupByDiscId even if MB has no release-group.
+                if (i == m_discPosition) d.mbDiscId = m_mbDiscId;
                 m_batch.discs.append(d);
             }
             m_inBatch = true;
@@ -496,11 +559,17 @@ void Ripper::onMbResolved(QVariantMap match) {
         m_batchExpectedDisc = m_discPosition;
         emit batchChanged();
     } else if (m_inBatch
-               && !m_currentReleaseGroupId.isEmpty()
-               && m_batch.releaseGroupId == m_currentReleaseGroupId)
+               && ((!m_currentReleaseGroupId.isEmpty()
+                    && m_batch.releaseGroupId == m_currentReleaseGroupId)
+                   || (!m_mbDiscId.isEmpty()
+                       && [&]{ for (const auto& d : m_batch.discs)
+                                  if (d.mbDiscId == m_mbDiscId) return true;
+                              return false; }())))
     {
         // Already in this batch — refresh the "expected disc" for the
-        // pill.
+        // pill. Match on release-group OR on this disc's known mbDiscId
+        // (the latter covers single-disc resumes that had no release-
+        // group entry from MB).
         m_batchExpectedDisc = m_discPosition;
         emit batchChanged();
     }
@@ -512,6 +581,35 @@ void Ripper::onMbResolved(QVariantMap match) {
 void Ripper::onMbUnavailable() {
     m_hasMatch = false;
     emit discChanged();
+}
+
+void Ripper::onRipStarting(QString tempDir) {
+    // Stamp "in_progress" + the live tempDir on the matching batch disc
+    // so a force-quit + restart can find the FLACs and resume from the
+    // first incomplete track. This is the one persistence step that
+    // happens before any track has been encoded; subsequent saves are
+    // batched into the per-track / per-disc-complete handlers.
+    if (!m_inBatch || tempDir.isEmpty()) {
+        m_currentTempDir = tempDir;
+        return;
+    }
+    m_currentTempDir = tempDir;
+    bool changed = false;
+    for (auto& d : m_batch.discs) {
+        if (d.position == m_discPosition) {
+            if (d.status != QStringLiteral("in_progress")
+                || d.tempDir   != tempDir
+                || d.mbDiscId  != m_mbDiscId)
+            {
+                d.status   = QStringLiteral("in_progress");
+                d.tempDir  = tempDir;
+                if (!m_mbDiscId.isEmpty()) d.mbDiscId = m_mbDiscId;
+                changed = true;
+            }
+            break;
+        }
+    }
+    if (changed) RipBatchStore::save(m_batch);
 }
 
 void Ripper::onReadStarted() {
@@ -668,6 +766,7 @@ void Ripper::onWorkerDiscSaved(QString fromTempDir, QString finalPath) {
                 d.status    = QStringLiteral("done");
                 d.savedPath = finalPath;
                 d.mbDiscId  = m_mbDiscId;
+                d.tempDir.clear();  // no longer in-progress
                 found = true;
                 break;
             }
@@ -719,8 +818,12 @@ void Ripper::onWorkerDiscSaved(QString fromTempDir, QString finalPath) {
 }
 
 void Ripper::onRipCancelled() {
-    // Worker has finished cleaning up. Return to either WaitingForDisc
-    // (if a batch is active and the user wants to retry) or Idle.
+    // Worker is preserving the temp dir + cd_rip.raw + partial FLACs
+    // so we can resume from this point on the next session. The disc
+    // entry KEEPS status="in_progress" with its tempDir so the resume
+    // picker can find it. The explicit-delete path (stopRip with
+    // deleteBatch=true) is responsible for invoking discardStagedRip
+    // separately and removing the batch JSON itself.
     resetDiscState();
     emit discChanged();
     emit tracksChanged();

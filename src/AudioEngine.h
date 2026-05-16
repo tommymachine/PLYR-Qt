@@ -77,7 +77,8 @@ public:
     // the full contract. pushPreviewPcm() crosses threads via a queued
     // signal — the QByteArray is implicitly shared so the bytes don't
     // get copied on the hop.
-    Q_INVOKABLE void startPreviewStream(qint64 totalDurationMs = 0);
+    Q_INVOKABLE void startPreviewStream(qint64 totalDurationMs = 0,
+                                        qint64 startOffsetMs   = 0);
     Q_INVOKABLE void pushPreviewPcm(const QByteArray& int16Bytes);
     Q_INVOKABLE void stopPreviewStream();
 
@@ -105,7 +106,7 @@ signals:
     void requestSetVolume(float v);
     void requestPlayAt(int playlistIndex, QUrl url);
     void requestEnqueueAt(int playlistIndex, QUrl url);
-    void requestStartPreviewStream(qint64 totalDurationMs);
+    void requestStartPreviewStream(qint64 totalDurationMs, qint64 startOffsetMs);
     void requestPushPreviewPcm(QByteArray int16Bytes);
     void requestStopPreviewStream();
 
