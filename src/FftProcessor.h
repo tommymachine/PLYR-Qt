@@ -43,6 +43,15 @@ class FftProcessor : public QObject {
     Q_PROPERTY(QVariantList eqBands READ eqBandsList NOTIFY updated)
     Q_PROPERTY(QVariantList eqPeaks READ eqPeaksList NOTIFY updated)
 
+    // SPAN-style display tilt for the 16-band shader bars (in dB/oct,
+    // referenced to 1 kHz). 0.0 = raw FFT; +3.0 = default (compensates
+    // for music's ~pink spectrum so the bars sit roughly flat on typical
+    // material); +4.5 ≈ Voxengo SPAN's broadcast preset. Range [0,6].
+    // Does NOT affect the EQ-band tap — that's the raw spectrum the EQ
+    // is actually shaping.
+    Q_PROPERTY(float displaySlope READ displaySlope WRITE setDisplaySlope
+               NOTIFY displaySlopeChanged)
+
 public:
     static constexpr int BAND_COUNT    = 16;
     static constexpr int EQ_BAND_COUNT = 10;
@@ -92,14 +101,27 @@ public:
     QVariantList eqBandsList() const;
     QVariantList eqPeaksList() const;
 
+    // Display-tilt accessor + setter. Setter clamps to [0,6] dB/oct.
+    float displaySlope() const { return m_displaySlopeDbPerOct; }
+    void  setDisplaySlope(float dbPerOct);
+
 signals:
     void updated();     // emit when bands change
+    void displaySlopeChanged();
 
 private:
     // Ring buffer for raw mono samples.
     std::vector<float> m_ring;
     int                m_writeIndex = 0;
     QMutex             m_ringMutex;
+
+    // One-pole DC-blocker state (HPF, ~35 Hz cutoff at 44.1 kHz).
+    // y[n] = x[n] - x[n-1] + α · y[n-1]. Applied to mono samples at
+    // push-time, so the ring stores DC-blocked audio. State persists
+    // across pushPcm calls. Per the Opus research agent's findings —
+    // see Julius O. Smith, "Introduction to Digital Filters" (CCRMA).
+    float m_dcPrevX = 0.0f;
+    float m_dcPrevY = 0.0f;
 
     // Scratch + FFT handle + Hann window.
     std::vector<float> m_snapshot;
@@ -117,4 +139,9 @@ private:
     std::array<float, EQ_BAND_COUNT> m_eqBands {};
     std::array<float, EQ_BAND_COUNT> m_eqPeaks {};
     std::array<int,   EQ_BAND_COUNT> m_eqPeakHoldFrames {};
+
+    // SPAN-style display tilt (dB/oct, reference 1 kHz). Default +3 makes
+    // pink-spectrum music plot roughly flat. See FftProcessor.cpp for
+    // the per-band scale-factor math.
+    float m_displaySlopeDbPerOct = 3.0f;
 };

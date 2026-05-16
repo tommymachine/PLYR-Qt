@@ -107,6 +107,7 @@ int main(int argc, char *argv[])
         settings.setValue("positionMs",        audio.position());
         settings.setValue("volume",            audio.volume());
         settings.setValue("syncCalibrationMs", audio.syncCalibrationMs());
+        settings.setValue("viz16BandSlope",    fft.displaySlope());
     };
 
     // Restore the A/V-sync calibration bias.
@@ -135,6 +136,13 @@ int main(int argc, char *argv[])
             qInfo() << "[settings] migrated lookaheadMs=" << savedOld
                     << "to syncCalibrationMs=" << migrated;
         }
+    }
+
+    // Restore the 16-band visualizer's SPAN-style display tilt. Default
+    // +3 dB/oct compensates for music's ~pink spectrum so the bars sit
+    // roughly flat on typical material — see FftProcessor.cpp.
+    if (settings.contains("viz16BandSlope")) {
+        fft.setDisplaySlope(float(settings.value("viz16BandSlope", 3.0).toDouble()));
     }
 
     // Restore where we left off, or fall back to the default demo folder

@@ -13,6 +13,16 @@ extern "C" {
 #include <cmath>
 #include <cstring>
 
+namespace {
+
+// One-pole DC-blocking high-pass coefficient. y[n] = x[n] - x[n-1] + α·y[n-1].
+// α = 0.995 gives -3 dB at f_c = (sr / (2π)) · (1 - α) ≈ 35 Hz @ 44.1 kHz,
+// which kills sub-25 Hz drift while preserving 30 Hz musical bass. See
+// Julius O. Smith, "Introduction to Digital Filters" (CCRMA), §B.7.
+constexpr float kDcBlockAlpha = 0.995f;
+
+}  // namespace
+
 
 struct FftProcessor::FftImpl {
     kiss_fftr_cfg cfg = nullptr;
@@ -45,6 +55,15 @@ FftProcessor::FftProcessor(QObject* parent)
 FftProcessor::~FftProcessor() = default;
 
 
+void FftProcessor::setDisplaySlope(float dbPerOct)
+{
+    const float v = std::clamp(dbPerOct, 0.0f, 6.0f);
+    if (std::fabs(v - m_displaySlopeDbPerOct) < 1e-4f) return;
+    m_displaySlopeDbPerOct = v;
+    emit displaySlopeChanged();
+}
+
+
 void FftProcessor::pushBuffer(const QAudioBuffer& buf)
 {
     const auto fmt      = buf.format();
@@ -53,10 +72,23 @@ void FftProcessor::pushBuffer(const QAudioBuffer& buf)
     if (frames <= 0 || channels <= 0) return;
 
 
-    // Fold each frame to mono, append to the ring buffer under lock.
+    // Fold each frame to mono, run the one-pole DC blocker, append to
+    // the ring under lock. DC-blocking before the ring so the snapshot
+    // → window → FFT chain downstream is unchanged; only sub-30-Hz
+    // drift gets evicted.
     QMutexLocker lk(&m_ringMutex);
     const int cap = int(m_ring.size());
     int w = m_writeIndex;
+    float px = m_dcPrevX;
+    float py = m_dcPrevY;
+
+    auto pushMono = [&](float s) {
+        const float y = s - px + kDcBlockAlpha * py;
+        px = s;
+        py = y;
+        m_ring[w] = y;
+        if (++w == cap) w = 0;
+    };
 
     switch (fmt.sampleFormat()) {
         case QAudioFormat::Float: {
@@ -65,8 +97,7 @@ void FftProcessor::pushBuffer(const QAudioBuffer& buf)
                 float s = 0.0f;
                 for (int c = 0; c < channels; ++c)
                     s += src[i * channels + c];
-                m_ring[w] = s / float(channels);
-                if (++w == cap) w = 0;
+                pushMono(s / float(channels));
             }
             break;
         }
@@ -77,8 +108,7 @@ void FftProcessor::pushBuffer(const QAudioBuffer& buf)
                 float s = 0.0f;
                 for (int c = 0; c < channels; ++c)
                     s += float(src[i * channels + c]) * inv;
-                m_ring[w] = s / float(channels);
-                if (++w == cap) w = 0;
+                pushMono(s / float(channels));
             }
             break;
         }
@@ -89,8 +119,7 @@ void FftProcessor::pushBuffer(const QAudioBuffer& buf)
                 float s = 0.0f;
                 for (int c = 0; c < channels; ++c)
                     s += float(src[i * channels + c]) * inv;
-                m_ring[w] = s / float(channels);
-                if (++w == cap) w = 0;
+                pushMono(s / float(channels));
             }
             break;
         }
@@ -98,6 +127,8 @@ void FftProcessor::pushBuffer(const QAudioBuffer& buf)
             break;
     }
     m_writeIndex = w;
+    m_dcPrevX = px;
+    m_dcPrevY = py;
 }
 
 
@@ -114,6 +145,19 @@ void FftProcessor::pushPcm(const char* data, qint64 bytes, const QAudioFormat& f
     QMutexLocker lk(&m_ringMutex);
     const int cap = int(m_ring.size());
     int w = m_writeIndex;
+    float px = m_dcPrevX;
+    float py = m_dcPrevY;
+
+    // Fold-to-mono then DC-block, same as pushBuffer. The filter state
+    // (px, py) is shared between push paths via m_dcPrev{X,Y} so swapping
+    // between the QAudioBuffer and PCM-pipe sources is seamless.
+    auto pushMono = [&](float s) {
+        const float y = s - px + kDcBlockAlpha * py;
+        px = s;
+        py = y;
+        m_ring[w] = y;
+        if (++w == cap) w = 0;
+    };
 
     switch (fmt.sampleFormat()) {
         case QAudioFormat::Float: {
@@ -122,8 +166,7 @@ void FftProcessor::pushPcm(const char* data, qint64 bytes, const QAudioFormat& f
                 float s = 0.0f;
                 for (int c = 0; c < channels; ++c)
                     s += src[i * channels + c];
-                m_ring[w] = s / float(channels);
-                if (++w == cap) w = 0;
+                pushMono(s / float(channels));
             }
             break;
         }
@@ -134,8 +177,7 @@ void FftProcessor::pushPcm(const char* data, qint64 bytes, const QAudioFormat& f
                 float s = 0.0f;
                 for (int c = 0; c < channels; ++c)
                     s += float(src[i * channels + c]) * inv;
-                m_ring[w] = s / float(channels);
-                if (++w == cap) w = 0;
+                pushMono(s / float(channels));
             }
             break;
         }
@@ -146,8 +188,7 @@ void FftProcessor::pushPcm(const char* data, qint64 bytes, const QAudioFormat& f
                 float s = 0.0f;
                 for (int c = 0; c < channels; ++c)
                     s += float(src[i * channels + c]) * inv;
-                m_ring[w] = s / float(channels);
-                if (++w == cap) w = 0;
+                pushMono(s / float(channels));
             }
             break;
         }
@@ -155,6 +196,8 @@ void FftProcessor::pushPcm(const char* data, qint64 bytes, const QAudioFormat& f
             break;
     }
     m_writeIndex = w;
+    m_dcPrevX = px;
+    m_dcPrevY = py;
 }
 
 
@@ -188,6 +231,16 @@ bool FftProcessor::fillBandsAndPeaks(float* out)
     const int       binCount   = int(m_fft->spectrum.size());
     const float     norm       = 1.0f / float(FFT_SIZE / 2);
 
+    // SPAN-style display tilt — multiply each band's magnitude by
+    //   10^( slope · log2(fc / 1 kHz) / 20 )
+    // before the dB conversion. Reference 1 kHz; +3 dB/oct compensates
+    // for the ~pink spectrum of typical music so the bars sit roughly
+    // flat. See Voxengo SPAN's "slope" parameter for the standard
+    // implementation. Peak-hold values track m_bands[i] downstream, so
+    // tilting newBands[i] propagates to peaks automatically.
+    constexpr float kFRef = 1000.0f;
+    const float slopeDb = m_displaySlopeDbPerOct;
+
     std::array<float, BAND_COUNT> newBands {};
     for (int i = 0; i < BAND_COUNT; ++i) {
         const float f0 = minFreq * std::pow(maxFreq / minFreq, float(i)     / float(BAND_COUNT));
@@ -199,18 +252,41 @@ bool FftProcessor::fillBandsAndPeaks(float* out)
             const auto c = m_fft->spectrum[b];
             sum += std::sqrt(c.r * c.r + c.i * c.i);
         }
-        const float mag = (sum / float(b1 - b0 + 1)) * norm;
+        float mag = (sum / float(b1 - b0 + 1)) * norm;
+
+        // Per-band tilt at the geometric-mean center frequency.
+        const float fc   = std::sqrt(f0 * f1);
+        const float tilt = std::pow(10.0f,
+            slopeDb * std::log2(fc / kFRef) / 20.0f);
+        mag *= tilt;
+
         const float db  = 20.0f * std::log10(std::max(mag, 1e-7f));
         newBands[i] = std::clamp((db + 80.0f) / 80.0f, 0.0f, 1.0f);
     }
 
-    // Fast attack, slow release.
-    constexpr float release         = 0.25f;
+    // Per-band attack + release smoothing. Low bands have inherently
+    // higher per-frame variance because they aggregate only 1–2 FFT
+    // bins each (band 0 ≈ 30 Hz at 21 Hz bin width = 1 bin), while
+    // high bands aggregate 100+ bins (band 15 ≈ 240 bins). Same
+    // spatial averaging would mean low bars twitch while high bars
+    // sit calmly. Compensate with extra temporal averaging on the
+    // low end:
+    //
+    //   attack:  0.30 (band 0, smoothed)  →  1.00 (band 15, instant)
+    //   release: 0.08 (band 0, slow)      →  0.35 (band 15, snappy)
+    //
+    // attack=1.0 reproduces the old "instant attack" behavior. The
+    // release values are LERP coefficients applied per refresh tick;
+    // smaller = slower decay.
     constexpr int   peakHoldFrames  = 36;   // ~0.6s at 60fps
     constexpr float peakFallPerFrame = 0.010f;
 
     for (int i = 0; i < BAND_COUNT; ++i) {
-        if (newBands[i] >= m_bands[i]) m_bands[i] = newBands[i];
+        const float t       = float(i) / float(BAND_COUNT - 1);
+        const float attack  = 0.30f + (1.00f - 0.30f) * t;
+        const float release = 0.08f + (0.35f - 0.08f) * t;
+
+        if (newBands[i] >= m_bands[i]) m_bands[i] += (newBands[i] - m_bands[i]) * attack;
         else                           m_bands[i] += (newBands[i] - m_bands[i]) * release;
 
         if (m_bands[i] >= m_peaks[i]) {
@@ -250,8 +326,13 @@ bool FftProcessor::fillBandsAndPeaks(float* out)
         const float db    = 20.0f * std::log10(std::max(mag, 1e-7f));
         const float level = std::clamp((db + 80.0f) / 80.0f, 0.0f, 1.0f);
 
+        // EQ-panel bars keep the old uniform release. The 10 ISO bands
+        // are half-octave-wide each — even the lowest (31.5 Hz with
+        // ~22 Hz bandwidth) gets at least one full FFT bin, so per-band
+        // variance is uniform enough that one release works for all.
+        constexpr float eqRelease = 0.25f;
         if (level >= m_eqBands[i]) m_eqBands[i] = level;
-        else                       m_eqBands[i] += (level - m_eqBands[i]) * release;
+        else                       m_eqBands[i] += (level - m_eqBands[i]) * eqRelease;
 
         if (m_eqBands[i] >= m_eqPeaks[i]) {
             m_eqPeaks[i] = m_eqBands[i];

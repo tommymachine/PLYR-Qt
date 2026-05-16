@@ -16,6 +16,12 @@ namespace {
 
 constexpr float kPi = 3.14159265358979323846f;
 
+// One-pole DC-blocking high-pass coefficient (matches FftProcessor).
+// y[n] = x[n] - x[n-1] + α·y[n-1]. α = 0.995 → -3 dB ≈ 35 Hz @ 44.1 kHz.
+// See Julius O. Smith, "Introduction to Digital Filters" (CCRMA), §B.7.
+// Per-channel state so a stereo DC phase difference doesn't bleed.
+constexpr float kDcBlockAlpha = 0.995f;
+
 // Per-band passband cutoffs (Hz). Log-spaced, perceptually motivated:
 //   bass  20-200    : kick, sub, bass guitar fundamentals.
 //   mid   200-2000  : vocal / midrange instrument fundamentals.
@@ -221,6 +227,20 @@ void AudioFeatures::pushPcm(const char* data, qint64 bytes, const QAudioFormat& 
     const int cap = m_ringCapacity;
     int       w   = m_ringWrite;
 
+    // Per-channel DC-blocker state, hoisted to locals for the inner loop.
+    // Filter state persists across pushPcm calls via m_dcPrev{XL,YL,XR,YR}.
+    float pxL = m_dcPrevXL, pyL = m_dcPrevYL;
+    float pxR = m_dcPrevXR, pyR = m_dcPrevYR;
+    auto pushFrame = [&](float L, float R) {
+        const float yL = L - pxL + kDcBlockAlpha * pyL;
+        pxL = L; pyL = yL;
+        const float yR = R - pxR + kDcBlockAlpha * pyR;
+        pxR = R; pyR = yR;
+        m_ringL[w] = yL;
+        m_ringR[w] = yR;
+        if (++w == cap) w = 0;
+    };
+
     // Decode + write straight into the ring. Common case is Float/2ch
     // (canonical out of AudioWorker), but the other formats exist for
     // robustness — same shape as FftProcessor::pushPcm.
@@ -230,16 +250,12 @@ void AudioFeatures::pushPcm(const char* data, qint64 bytes, const QAudioFormat& 
             if (channels == 1) {
                 for (int i = 0; i < frames; ++i) {
                     const float s = src[i];
-                    m_ringL[w] = s;
-                    m_ringR[w] = s;
-                    if (++w == cap) w = 0;
+                    pushFrame(s, s);
                 }
             } else {
                 // channels >= 2: take first two as L/R, ignore the rest.
                 for (int i = 0; i < frames; ++i) {
-                    m_ringL[w] = src[i * channels + 0];
-                    m_ringR[w] = src[i * channels + 1];
-                    if (++w == cap) w = 0;
+                    pushFrame(src[i * channels + 0], src[i * channels + 1]);
                 }
             }
             break;
@@ -250,15 +266,12 @@ void AudioFeatures::pushPcm(const char* data, qint64 bytes, const QAudioFormat& 
             if (channels == 1) {
                 for (int i = 0; i < frames; ++i) {
                     const float s = float(src[i]) * inv;
-                    m_ringL[w] = s;
-                    m_ringR[w] = s;
-                    if (++w == cap) w = 0;
+                    pushFrame(s, s);
                 }
             } else {
                 for (int i = 0; i < frames; ++i) {
-                    m_ringL[w] = float(src[i * channels + 0]) * inv;
-                    m_ringR[w] = float(src[i * channels + 1]) * inv;
-                    if (++w == cap) w = 0;
+                    pushFrame(float(src[i * channels + 0]) * inv,
+                              float(src[i * channels + 1]) * inv);
                 }
             }
             break;
@@ -269,15 +282,12 @@ void AudioFeatures::pushPcm(const char* data, qint64 bytes, const QAudioFormat& 
             if (channels == 1) {
                 for (int i = 0; i < frames; ++i) {
                     const float s = float(src[i]) * inv;
-                    m_ringL[w] = s;
-                    m_ringR[w] = s;
-                    if (++w == cap) w = 0;
+                    pushFrame(s, s);
                 }
             } else {
                 for (int i = 0; i < frames; ++i) {
-                    m_ringL[w] = float(src[i * channels + 0]) * inv;
-                    m_ringR[w] = float(src[i * channels + 1]) * inv;
-                    if (++w == cap) w = 0;
+                    pushFrame(float(src[i * channels + 0]) * inv,
+                              float(src[i * channels + 1]) * inv);
                 }
             }
             break;
@@ -288,6 +298,8 @@ void AudioFeatures::pushPcm(const char* data, qint64 bytes, const QAudioFormat& 
             return;
     }
     m_ringWrite = w;
+    m_dcPrevXL = pxL; m_dcPrevYL = pyL;
+    m_dcPrevXR = pxR; m_dcPrevYR = pyR;
 }
 
 

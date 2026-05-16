@@ -204,6 +204,12 @@ private:
     int                m_ringWrite = 0;   // next-write index, in frames
     int                m_ringCapacity = 0; // in frames
 
+    // One-pole DC-blocker state, per channel. See AudioFeatures.cpp.
+    // L and R run independently so a stereo phase difference at DC
+    // doesn't bleed into either channel's filter state.
+    float m_dcPrevXL = 0.0f, m_dcPrevYL = 0.0f;
+    float m_dcPrevXR = 0.0f, m_dcPrevYR = 0.0f;
+
     // --- Snapshot + windowed buffers (GUI thread only) ---------------------
     std::vector<float> m_snapL;
     std::vector<float> m_snapR;
