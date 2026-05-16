@@ -1,15 +1,16 @@
 #include "RipBatchStore.h"
 
+#include "SystemPaths.h"
+
 #include <QDir>
 #include <QFile>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QSaveFile>
-#include <QStandardPaths>
 #include <QUuid>
 
-namespace plyr::cd {
+namespace concerto::cd {
 
 namespace {
 
@@ -87,12 +88,13 @@ QString discBatchPath(const QString& root, const QString& batchId) {
 } // namespace
 
 QString RipBatchStore::defaultRoot() {
-    // GenericDataLocation on macOS resolves to
-    // ~/Library/Application Support — same path the rip-in-progress temp
-    // dir uses. AppData on Windows; ~/.local/share on Linux.
-    const QString base = QStandardPaths::writableLocation(
-        QStandardPaths::GenericDataLocation);
-    return base + QStringLiteral("/Concerto/rip_batches");
+    // Routed through concerto::paths::appDataDir() so the app's on-disk
+    // root is named exactly once (in main.cpp's setApplicationName).
+    // On macOS this resolves to
+    //   ~/Library/Application Support/<applicationName>/rip_batches
+    // matching the rip-in-progress temp dir, the metadata cache, and
+    // the pending-submissions log.
+    return concerto::paths::appDataDir() + QStringLiteral("/rip_batches");
 }
 
 bool RipBatchStore::save(const RipBatch& batch, const QString& root) {
@@ -212,4 +214,4 @@ QString RipBatchStore::newBatchId() {
     return QUuid::createUuid().toString(QUuid::WithoutBraces).remove(QChar('-'));
 }
 
-} // namespace plyr::cd
+} // namespace concerto::cd

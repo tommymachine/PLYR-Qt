@@ -17,7 +17,7 @@
 
 // Ripser linkage. The vendored ripser.cpp is compiled as a single
 // static library with -DRIPSER_NO_MAIN -DRIPSER_USE_OUTPUT_HOOK
-// -DRIPSER_PLYR_QT_TRAMPOLINE. The trampoline knob appends an
+// -DRIPSER_CONCERTO_TRAMPOLINE. The trampoline knob appends an
 // extern-"C" entry point to the bottom of ripser.cpp:
 //
 //     extern "C" void phRunRipser(const float* lowerDistances,
@@ -25,7 +25,7 @@
 //
 // so callers can drive a compute_barcodes() run without #include'ing
 // the 1300-line templated source. See
-// third_party/ripser/PLYR_QT.patch for the full patch summary.
+// third_party/ripser/CONCERTO.patch for the full patch summary.
 extern "C" void phRunRipser(const float* lowerDistances, int n,
                             float threshold, int dimMax);
 

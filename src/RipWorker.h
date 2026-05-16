@@ -38,7 +38,7 @@
 
 #include <atomic>
 
-namespace plyr::cd {
+namespace concerto::cd {
 
 class RipWorker : public QObject {
     Q_OBJECT
@@ -189,4 +189,4 @@ private:
     QString           m_currentTempDir;  // populated by doRip
 };
 
-} // namespace plyr::cd
+} // namespace concerto::cd

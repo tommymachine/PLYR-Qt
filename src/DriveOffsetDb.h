@@ -19,7 +19,7 @@
 #include <string>
 #include <vector>
 
-namespace plyr::cd {
+namespace concerto::cd {
 
 // Lookup by canonicalized vendor / product strings (uppercase, trimmed,
 // internal-whitespace collapsed — the form CdDevice::DriveInfo already
@@ -36,4 +36,4 @@ int driveOffsetTableSize();
 // Up to `n` entries. For diagnostics only.
 std::vector<std::string> sampleDriveNames(int n);
 
-} // namespace plyr::cd
+} // namespace concerto::cd

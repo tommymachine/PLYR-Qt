@@ -1,4 +1,4 @@
-// macOS implementation of plyr::cd::CdShield. See CdShield.h.
+// macOS implementation of concerto::cd::CdShield. See CdShield.h.
 //
 // Notes on DA semantics:
 //
@@ -33,7 +33,7 @@
 //   still got started. The shield's value is exclusive disc access
 //   (Finder / Spotlight / Music can't read our raw sectors out from
 //   under a rip-in-progress), not Music suppression. Music
-//   suppression is plyr::MusicBlocker's job: it observes
+//   suppression is concerto::MusicBlocker's job: it observes
 //   NSWorkspaceWillLaunchApplicationNotification and force-terminates
 //   Music between fork and main-window. The visible "icon flash"
 //   when a disc is inserted is Music.app briefly existing before
@@ -54,7 +54,7 @@
 #include <string>
 #include <vector>
 
-namespace plyr::cd {
+namespace concerto::cd {
 
 namespace {
 
@@ -247,4 +247,4 @@ void CdShield::setOnDiscDisappeared(DiscListener listener) {
     disappearedListener_ = std::move(listener);
 }
 
-} // namespace plyr::cd
+} // namespace concerto::cd

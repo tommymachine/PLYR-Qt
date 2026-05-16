@@ -38,7 +38,7 @@
 #include <memory>
 
 #ifdef Q_OS_MACOS
-namespace plyr::sync {
+namespace concerto::sync {
 class AudioClock;
 class DisplayClock;
 }
@@ -129,8 +129,8 @@ public slots:
     // Stored via atomic so the audio-thread reader sees the writes
     // without a lock.
 #ifdef Q_OS_MACOS
-    void setClocksForLookahead(plyr::sync::AudioClock*   audio,
-                               plyr::sync::DisplayClock* display);
+    void setClocksForLookahead(concerto::sync::AudioClock*   audio,
+                               concerto::sync::DisplayClock* display);
 #endif
 
 signals:
@@ -232,7 +232,7 @@ private:
     // worker's shutdown() completes, so as long as we read them only
     // while the timer is firing (= worker thread alive + play state),
     // they remain valid.
-    std::atomic<plyr::sync::AudioClock*>   m_audioClockAtom{nullptr};
-    std::atomic<plyr::sync::DisplayClock*> m_displayClockAtom{nullptr};
+    std::atomic<concerto::sync::AudioClock*>   m_audioClockAtom{nullptr};
+    std::atomic<concerto::sync::DisplayClock*> m_displayClockAtom{nullptr};
 #endif
 };

@@ -17,7 +17,7 @@
 #include <string>
 #include <vector>
 
-namespace plyr::cd {
+namespace concerto::cd {
 
 // One enumerated optical drive. `id` is the platform handle to pass back into
 // `CdDevice::open` — on macOS the BSD name without the `/dev/` prefix (e.g.
@@ -94,4 +94,4 @@ public:
     virtual bool                       eject()                               = 0;
 };
 
-} // namespace plyr::cd
+} // namespace concerto::cd

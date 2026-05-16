@@ -1,6 +1,6 @@
-# PLYR-Qt CD Rip Strategy
+# Concerto CD Rip Strategy
 
-The plan for bringing CD ripping + AccurateRip verification into PLYR-Qt
+The plan for bringing CD ripping + AccurateRip verification into Concerto
 ("Concerto") as a first-class in-app feature, replacing the loose
 `~/Downloads/rip_cd.sh` bash script.
 
@@ -19,13 +19,13 @@ bundle.
 
 ### 1. License stance: non-GPL / permissive
 
-PLYR-Qt stays non-GPL. Path: clean-room reimplementation of publicly
+Concerto stays non-GPL. Path: clean-room reimplementation of publicly
 documented algorithms + permissively-licensed libraries only.
 
 - **libFLAC (BSD)** — decode + encode. Linkable / vendorable, no copyleft.
 - **libdiscid (LGPL)** — MusicBrainz disc id; linkable in a closed app.
 - **NOT libcdio / libcdio-paranoia / cdparanoia** — all GPL. Linking them
-  would force PLYR-Qt to GPL.
+  would force Concerto to GPL.
 - AccurateRip checksum, CDDB id, MusicBrainz disc id, CTDB lookup —
   clean-room implementations from public specs / Hydrogenaudio reverse-
   engineering notes. No transcription of GPL source.

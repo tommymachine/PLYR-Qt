@@ -13,8 +13,8 @@
 
 class QWindow;
 
-namespace plyr {
+namespace concerto {
 
 void hideMacWindowTitle(QWindow* window);
 
-} // namespace plyr
+} // namespace concerto

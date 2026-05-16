@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.21)
 # OBJC + OBJCXX are needed for the macOS .mm files (audio/display clock
 # shims, NSOpenPanel prewarm, MusicBlocker observer). On non-Apple builds
 # CMake silently ignores OBJC* — they're harmless to list everywhere.
-project(plyr_qt VERSION 0.1 LANGUAGES CXX C OBJC OBJCXX)
+project(concerto VERSION 0.1 LANGUAGES CXX C OBJC OBJCXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -62,19 +62,19 @@ set_target_properties(kissfft PROPERTIES
 #                                calls to extern ripser_emit_pair /
 #                                ripser_begin_dim (defined in
 #                                src/PersistentHomologyAnalyzer.cpp).
-#   * RIPSER_PLYR_QT_TRAMPOLINE -- expose a plain extern-"C" entry
+#   * RIPSER_CONCERTO_TRAMPOLINE -- expose a plain extern-"C" entry
 #                                point `phRunRipser(distances, n,
 #                                threshold, dimMax)` so callers don't
 #                                need to #include the 1300-line
 #                                ripser.cpp directly.
-# See third_party/ripser/PLYR_QT.patch for the patch summary and
+# See third_party/ripser/CONCERTO.patch for the patch summary and
 # rationale. License hygiene: third_party/ripser/COPYING.txt is
 # preserved at the source-tree level.
 add_library(ripser STATIC third_party/ripser/ripser.cpp)
 target_compile_definitions(ripser PUBLIC
     RIPSER_NO_MAIN
     RIPSER_USE_OUTPUT_HOOK
-    RIPSER_PLYR_QT_TRAMPOLINE
+    RIPSER_CONCERTO_TRAMPOLINE
 )
 target_include_directories(ripser PUBLIC third_party/ripser)
 target_compile_options(ripser PRIVATE -O3)
@@ -130,13 +130,13 @@ set_target_properties(arverify PROPERTIES
     AUTOUIC OFF
 )
 
-qt_add_executable(plyr_qt
+qt_add_executable(concerto
     src/main.cpp
 )
 
-target_include_directories(plyr_qt PRIVATE src)
+target_include_directories(concerto PRIVATE src)
 
-qt_add_qml_module(plyr_qt
+qt_add_qml_module(concerto
     URI         PLYR
     VERSION     1.0
     QML_FILES
@@ -205,6 +205,20 @@ qt_add_qml_module(plyr_qt
         src/FlacEncode.h
         src/MusicBrainz.cpp
         src/MusicBrainz.h
+        src/MetadataModel.cpp
+        src/MetadataModel.h
+        src/MetadataScoring.cpp
+        src/MetadataScoring.h
+        src/MetadataCache.cpp
+        src/MetadataCache.h
+        src/MetadataResolver.cpp
+        src/MetadataResolver.h
+        src/CdTextReader.cpp
+        src/CdTextReader.h
+        src/AcoustIdProvider.cpp
+        src/AcoustIdProvider.h
+        src/PendingSubmissions.cpp
+        src/PendingSubmissions.h
         src/Ripper.cpp
         src/Ripper.h
         src/RipBatchStore.cpp
@@ -253,15 +267,15 @@ qt_add_qml_module(plyr_qt
         src/FlacDecode.h
 )
 
-# Embed the bundled AccurateRip drive-offset table into plyr_qt so the
+# Embed the bundled AccurateRip drive-offset table into concerto so the
 # in-app rip can look up the connected drive's offset at rip time — same
 # resource cdrip_cli already uses for the CLI rip flow.
-qt_add_resources(plyr_qt "plyr_qt_drive_offsets"
+qt_add_resources(concerto "concerto_drive_offsets"
     PREFIX "/"
     FILES resources/drive_offsets.json
 )
 
-# macOS-only platform sources for plyr_qt. AppKit + DiskArbitration get
+# macOS-only platform sources for concerto. AppKit + DiskArbitration get
 # linked together because the rip-session components depend on both:
 #   * macos_prewarm.mm    — NSOpenPanel prewarm (AppKit; iOS uses
 #                           UIDocumentPickerViewController, so excluded).
@@ -274,7 +288,7 @@ qt_add_resources(plyr_qt "plyr_qt_drive_offsets"
 #                           disc event in the first place. Plain C++ —
 #                           DA is a C API, no Obj-C needed.
 if(APPLE AND NOT IOS)
-    target_sources(plyr_qt PRIVATE
+    target_sources(concerto PRIVATE
         src/macos_prewarm.mm
         src/macos_titlebar.mm
         src/MusicBlocker_macOS.mm
@@ -298,7 +312,7 @@ if(APPLE AND NOT IOS)
         src/DisplayClock_macOS.mm
         PROPERTIES LANGUAGE OBJCXX
     )
-    target_link_libraries(plyr_qt PRIVATE
+    target_link_libraries(concerto PRIVATE
         "-framework AppKit"
         "-framework DiskArbitration"
         "-framework IOKit"
@@ -581,10 +595,31 @@ if(NOT IOS AND NOT ANDROID)
         src/mbquery_main.cpp
         src/MusicBrainz.cpp
         src/MusicBrainz.h
+        src/MetadataModel.cpp
+        src/MetadataModel.h
+        src/MetadataScoring.cpp
+        src/MetadataScoring.h
+        src/MetadataCache.cpp
+        src/MetadataCache.h
+        src/MetadataResolver.cpp
+        src/MetadataResolver.h
+        src/CdTextReader.cpp
+        src/CdTextReader.h
+        src/AcoustIdProvider.cpp
+        src/AcoustIdProvider.h
+        src/PendingSubmissions.cpp
+        src/PendingSubmissions.h
         src/FlacDecode.cpp
         src/FlacDecode.h
         src/FlacEncode.cpp
         src/FlacEncode.h
+        src/FlacTags.cpp
+        src/FlacTags.h
+        # SystemPaths gives the CLI access to the same appDataDir() +
+        # migrateAppData() helpers the GUI app uses, so cache hits land
+        # in the same on-disk location.
+        src/SystemPaths.cpp
+        src/SystemPaths.h
     )
     target_include_directories(mbquery_cli PRIVATE src)
     target_link_libraries(mbquery_cli PRIVATE
@@ -610,6 +645,10 @@ if(NOT IOS AND NOT ANDROID)
         src/FlacEncode.h
         src/MusicBrainz.cpp
         src/MusicBrainz.h
+        src/MetadataModel.cpp
+        src/MetadataModel.h
+        src/MetadataScoring.cpp
+        src/MetadataScoring.h
     )
     if(APPLE)
         list(APPEND CDRIP_SOURCES
@@ -657,7 +696,7 @@ if(NOT IOS AND NOT ANDROID)
     set_target_properties(ssmgen_cli PROPERTIES MACOSX_BUNDLE FALSE)
 endif()
 
-target_link_libraries(plyr_qt PRIVATE
+target_link_libraries(concerto PRIVATE
     Qt6::Core
     Qt6::Gui
     # GuiPrivate gives ScopeRenderer access to QRhi/QShader — the
@@ -677,7 +716,7 @@ target_link_libraries(plyr_qt PRIVATE
     projectM::Eval
     # ripser (MIT) — Vietoris-Rips persistent-homology engine for
     # Layer 4a's H0/H1 barcode visualizer. Single-file C++17 lib;
-    # see third_party/ripser/PLYR_QT.patch for the minimal patch we
+    # see third_party/ripser/CONCERTO.patch for the minimal patch we
     # apply to turn its CLI source into a linkable library.
     ripser
 )
@@ -686,7 +725,7 @@ target_link_libraries(plyr_qt PRIVATE
 # qsb emits multi-target bytecode so the same shaders run on Metal (macOS,
 # iOS), Vulkan (Linux, Android), D3D11/12 (Windows), and OpenGL. ShaderEffect
 # in Main.qml loads them by URL: qrc:/shaders/viz.{vert,frag}.qsb
-qt_add_shaders(plyr_qt "viz_shaders"
+qt_add_shaders(concerto "viz_shaders"
     PRECOMPILE
     BASE    shaders
     PREFIX  "/shaders"
@@ -699,7 +738,7 @@ qt_add_shaders(plyr_qt "viz_shaders"
 # orbiting specular highlight. Backs CdDiscCanvas's bottom layer; the
 # Canvas2D overlay on top still draws track boundary circles, sweep
 # line, hub trim, etc.
-qt_add_shaders(plyr_qt "cd_disc_shaders"
+qt_add_shaders(concerto "cd_disc_shaders"
     PRECOMPILE
     BASE    shaders
     PREFIX  "/shaders"
@@ -714,7 +753,7 @@ qt_add_shaders(plyr_qt "cd_disc_shaders"
 # beam-velocity modulation baked into the analytic 1/L factor). The
 # decay shader is reused for both phosphor fade and the final composite
 # pass — same math (tint × scalar × sample), different uniforms.
-qt_add_shaders(plyr_qt "scope_shaders"
+qt_add_shaders(concerto "scope_shaders"
     PRECOMPILE
     BASE    shaders
     PREFIX  "/shaders"
@@ -730,7 +769,7 @@ qt_add_shaders(plyr_qt "scope_shaders"
 # SpectrumAnalyzer, composites a viridis-tinted fill + peak traces, and
 # draws a subtle bottom-to-top brightness ramp. All log-x remapping and
 # +N dB/oct tilting happens CPU-side in SpectrumAnalyzer::runPipeline.
-qt_add_shaders(plyr_qt "spectrum_shaders"
+qt_add_shaders(concerto "spectrum_shaders"
     PRECOMPILE
     BASE    shaders
     PREFIX  "/shaders"
@@ -745,7 +784,7 @@ qt_add_shaders(plyr_qt "spectrum_shaders"
 # either the analytic magma colormap (mastering default) or a two-
 # colour gradient. All octave-recursive CQT math lives in CqtAnalyzer
 # and CqtSpectrogram on the CPU side.
-qt_add_shaders(plyr_qt "cqt_spectrogram_shaders"
+qt_add_shaders(concerto "cqt_spectrogram_shaders"
     PRECOMPILE
     BASE    shaders
     PREFIX  "/shaders"
@@ -759,7 +798,7 @@ qt_add_shaders(plyr_qt "cqt_spectrogram_shaders"
 # estimate's toroidal centroid. All audio analysis happens on the CPU
 # in KeyEstimator; the fragment shader is a pure-rendering pass driven
 # by a handful of vec4 uniforms.
-qt_add_shaders(plyr_qt "tonal_torus_shaders"
+qt_add_shaders(concerto "tonal_torus_shaders"
     PRECOMPILE
     BASE    shaders
     PREFIX  "/shaders"
@@ -775,7 +814,7 @@ qt_add_shaders(plyr_qt "tonal_torus_shaders"
 # the lateral coordinate, an age-based color + alpha gradient
 # (tailColor -> headColor), and clip-z fog. All MFCC + PCA math lives
 # CPU-side in MfccAnalyzer / MfccTrajectory.
-qt_add_shaders(plyr_qt "mfcc_trajectory_shaders"
+qt_add_shaders(concerto "mfcc_trajectory_shaders"
     PRECOMPILE
     BASE    shaders
     PREFIX  "/shaders"
@@ -795,7 +834,7 @@ qt_add_shaders(plyr_qt "mfcc_trajectory_shaders"
 #     color array, output as premultiplied-alpha RGBA for additive
 #     accumulation.
 # All Hilbert + bandpass math lives CPU-side in HilbertAnalyzer.
-qt_add_shaders(plyr_qt "hilbert_rosette_shaders"
+qt_add_shaders(concerto "hilbert_rosette_shaders"
     PRECOMPILE
     BASE    shaders
     PREFIX  "/shaders"
@@ -819,7 +858,7 @@ qt_add_shaders(plyr_qt "hilbert_rosette_shaders"
 # in qml/ShaderToyPane.qml's shaderLibrary array. Rebuild and it's
 # live (compile-time, not runtime — users can author new shaders but
 # each requires a rebuild).
-qt_add_shaders(plyr_qt "shadertoy_shaders"
+qt_add_shaders(concerto "shadertoy_shaders"
     PRECOMPILE
     BASE    shaders
     PREFIX  "/shaders"
@@ -844,7 +883,7 @@ qt_add_shaders(plyr_qt "shadertoy_shaders"
 #     QQuickRhiItem's visible target with optional gamma correction.
 # Both share their UBO layouts with the matching C struct in
 # src/MilkdropView.cpp; std140 packing must match.
-qt_add_shaders(plyr_qt "milkdrop_shaders"
+qt_add_shaders(concerto "milkdrop_shaders"
     PRECOMPILE
     BASE    shaders
     PREFIX  "/shaders"
@@ -862,7 +901,7 @@ qt_add_shaders(plyr_qt "milkdrop_shaders"
 #   * pde_grayscott_display.frag -- maps (u, v) state to visible colours.
 #   * pde_chladni.frag           -- stateless vibrating-plate eigenmodes.
 # UBO layouts are duplicated in src/PdeView.cpp; std140 packing must match.
-qt_add_shaders(plyr_qt "pde_shaders"
+qt_add_shaders(concerto "pde_shaders"
     PRECOMPILE
     BASE    shaders
     PREFIX  "/shaders"
@@ -879,7 +918,7 @@ qt_add_shaders(plyr_qt "pde_shaders"
 # playbackFrac, tintColor). ssm_2d renders a full T x T heatmap with a
 # playback crosshair; ssm_inline renders one row at v=playbackFrac as a
 # horizontal strip for use behind the seek bar.
-qt_add_shaders(plyr_qt "ssm_shaders"
+qt_add_shaders(concerto "ssm_shaders"
     PRECOMPILE
     BASE    shaders
     PREFIX  "/shaders"
@@ -893,7 +932,7 @@ qt_add_shaders(plyr_qt "ssm_shaders"
 # Bundled MilkDrop preset library -- text files in the .milk format,
 # parsed at runtime by MilkdropRuntime. PREFIX "/" + relative path
 # means qml/C++ accesses them as `qrc:/presets/01_simple_zoom.milk`.
-qt_add_resources(plyr_qt "milkdrop_presets"
+qt_add_resources(concerto "milkdrop_presets"
     PREFIX "/"
     FILES
         presets/01_simple_zoom.milk
@@ -901,7 +940,7 @@ qt_add_resources(plyr_qt "milkdrop_presets"
         presets/03_kaleidoscope.milk
 )
 
-set_target_properties(plyr_qt PROPERTIES
+set_target_properties(concerto PROPERTIES
     OUTPUT_NAME                  "Concerto"
     MACOSX_BUNDLE                TRUE
     MACOSX_BUNDLE_BUNDLE_NAME    "Concerto"
@@ -917,14 +956,14 @@ set(_CONCERTO_ICNS "${CMAKE_CURRENT_SOURCE_DIR}/resources/icons/Concerto.icns")
 if(EXISTS "${_CONCERTO_ICNS}")
     set_source_files_properties("${_CONCERTO_ICNS}"
         PROPERTIES MACOSX_PACKAGE_LOCATION "Resources")
-    target_sources(plyr_qt PRIVATE "${_CONCERTO_ICNS}")
+    target_sources(concerto PRIVATE "${_CONCERTO_ICNS}")
 endif()
 
 # iOS-specific bundle/signing metadata. Code signing is left to Xcode's
 # "Sign to Run Locally" (Simulator) or the user's free Apple ID cert
 # (device), which Xcode sets up through its Signing & Capabilities tab.
 if(IOS)
-    set_target_properties(plyr_qt PROPERTIES
+    set_target_properties(concerto PROPERTIES
         XCODE_ATTRIBUTE_PRODUCT_BUNDLE_IDENTIFIER "com.thompson.concerto"
         # Qt 6.11 iOS prebuilts target iOS 17.0 — must match or ld warns.
         XCODE_ATTRIBUTE_IPHONEOS_DEPLOYMENT_TARGET "17.0"
@@ -939,7 +978,7 @@ if(IOS)
     set(_IOS_XCASSETS
         "${CMAKE_CURRENT_SOURCE_DIR}/resources/icons/AppIcon.xcassets")
     if(EXISTS "${_IOS_XCASSETS}")
-        target_sources(plyr_qt PRIVATE "${_IOS_XCASSETS}")
+        target_sources(concerto PRIVATE "${_IOS_XCASSETS}")
         set_source_files_properties("${_IOS_XCASSETS}"
             PROPERTIES MACOSX_PACKAGE_LOCATION "Resources")
     endif()
@@ -950,7 +989,7 @@ if(IOS)
     # "Undefined symbols: _sws_freeContext, ...".
     set(_QT_IOS_FFMPEG_DIR "$ENV{HOME}/Qt/6.11.0/ios/lib/ffmpeg")
     foreach(_lib avcodec avformat avutil swresample swscale)
-        target_link_libraries(plyr_qt PRIVATE
+        target_link_libraries(concerto PRIVATE
             "${_QT_IOS_FFMPEG_DIR}/lib${_lib}.xcframework/ios-arm64/lib${_lib}.framework/lib${_lib}"
         )
     endforeach()

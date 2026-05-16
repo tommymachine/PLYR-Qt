@@ -1,4 +1,4 @@
-// macOS implementation of plyr::MusicBlocker. See MusicBlocker.h for
+// macOS implementation of concerto::MusicBlocker. See MusicBlocker.h for
 // the design rationale.
 //
 // Block-based observer instead of a selector + target — same semantics
@@ -12,7 +12,7 @@
 
 #include "MusicBlocker.h"
 
-namespace plyr {
+namespace concerto {
 
 namespace {
 
@@ -54,4 +54,4 @@ void MusicBlocker::stop() {
     [token release];
 }
 
-} // namespace plyr
+} // namespace concerto

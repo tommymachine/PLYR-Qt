@@ -39,7 +39,7 @@
 #include <atomic>
 #include <vector>
 
-namespace plyr::sync {
+namespace concerto::sync {
 
 namespace {
 
@@ -459,4 +459,4 @@ bool AudioClock::isBluetooth() const
     return m_impl ? m_impl->m_isBluetooth : false;
 }
 
-} // namespace plyr::sync
+} // namespace concerto::sync

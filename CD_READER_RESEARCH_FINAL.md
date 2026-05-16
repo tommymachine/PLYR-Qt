@@ -1,6 +1,6 @@
 # CD-DA Reader: Authoritative Reference
 
-Consolidated, source-verified reference for implementing PLYR-Qt's native
+Consolidated, source-verified reference for implementing Concerto's native
 CD-DA reader. Supersedes `CD_READER_RESEARCH.md` (initial broad survey) and
 `CD_READER_RESEARCH_ADDENDUM.md` (source-grounded follow-up). Every load-bearing
 claim is checked against a primary source (Apple SDK headers, T10/MMC-6 spec,
@@ -801,7 +801,7 @@ v1 we ignore sub-channel either way.
 - Original report (line 569): "CDDL. Avoid."
 - **Truth.** Joerg Schilling's cdrtools is CDDL 1.0 (post-2007). CDDL is
   weak copyleft per-file. We could technically link cdrtools without
-  re-licensing PLYR-Qt, but the linker-driven aggregation is murky and
+  re-licensing Concerto, but the linker-driven aggregation is murky and
   the cdrtools community is small. Not worth the risk; staying clean.
 
 ---
@@ -824,7 +824,7 @@ plan's API sketch into one coherent shape.
 #include <string>
 #include <vector>
 
-namespace plyr::cd {
+namespace concerto::cd {
 
 struct DriveInfo {
     std::string id;       // platform-specific opaque handle string
@@ -909,7 +909,7 @@ public:
     virtual std::optional<std::string> readIsrc(uint8_t track) = 0;
 };
 
-} // namespace plyr::cd
+} // namespace concerto::cd
 ```
 
 ### 3.B. Per-platform mapping

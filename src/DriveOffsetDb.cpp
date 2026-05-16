@@ -11,7 +11,7 @@
 #include <string>
 #include <string_view>
 
-namespace plyr::cd {
+namespace concerto::cd {
 
 namespace {
 
@@ -125,4 +125,4 @@ std::optional<int> lookupDriveOffset(const std::string& vendor,
     return std::nullopt;
 }
 
-} // namespace plyr::cd
+} // namespace concerto::cd

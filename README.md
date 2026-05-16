@@ -1,4 +1,4 @@
-# PLYR Qt
+# Concerto
 
 Cross-platform port of [PLYR](https://github.com/tommymachine/PLYR), written
 in C++/QML with Qt 6. Targets macOS, Windows, Linux, iOS, and Android from a
@@ -29,7 +29,7 @@ single codebase.
 ```sh
 cmake -B build -G Ninja
 cmake --build build
-./build/plyr_qt
+open ./build/Concerto.app
 ```
 
 Requires:
@@ -39,5 +39,5 @@ Requires:
 
 ## Licensing
 
-LGPL v3 (Qt) dynamic linking. See the LICENSE file for PLYR Qt's own
+LGPL v3 (Qt) dynamic linking. See the LICENSE file for Concerto's own
 license and the `THIRDPARTY` notes for Qt / FFmpeg / KissFFT attribution.

@@ -51,7 +51,7 @@
 
 #include <optional>
 
-namespace plyr::cd {
+namespace concerto::cd {
 
 struct RipBatchDisc {
     int     position    = 0;       // 1-based
@@ -117,4 +117,4 @@ public:
     static QString newBatchId();
 };
 
-} // namespace plyr::cd
+} // namespace concerto::cd

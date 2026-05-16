@@ -1,4 +1,4 @@
-// Passthrough vertex shader for the PLYR visualizer.
+// Passthrough vertex shader for the Concerto visualizer.
 // All the work is done per-pixel in viz.frag; this just forwards
 // qt_TexCoord0 and applies the matrix/opacity Qt Quick provides.
 

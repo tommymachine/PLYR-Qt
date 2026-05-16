@@ -14,7 +14,7 @@
 
 #include <algorithm>
 
-namespace plyr::cd {
+namespace concerto::cd {
 
 namespace {
 
@@ -837,4 +837,4 @@ void Ripper::onFailed(QString message) {
     setState(State::Failed);
 }
 
-} // namespace plyr::cd
+} // namespace concerto::cd

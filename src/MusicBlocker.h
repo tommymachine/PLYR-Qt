@@ -28,7 +28,7 @@
   #endif
 #endif
 
-namespace plyr {
+namespace concerto {
 
 #ifdef CONCERTO_HAS_MUSIC_BLOCKER
 
@@ -59,4 +59,4 @@ public:
 
 #endif
 
-} // namespace plyr
+} // namespace concerto

@@ -29,6 +29,13 @@ int main(int argc, char *argv[])
     QGuiApplication::setApplicationName("Concerto");
     QGuiApplication::setApplicationVersion("0.1");
     QGuiApplication::setOrganizationName("Thompson");
+
+    // One-time rename of the legacy app-data dir to the current name.
+    // Idempotent — safe to call on every launch. See SystemPaths.cpp
+    // for the rules (no-op if the legacy dir doesn't exist; refuses
+    // to merge if both exist with content).
+    concerto::paths::migrateAppData();
+
     QQuickStyle::setStyle("Basic");
 
     QGuiApplication::setFont(QFont("Inter"));
@@ -46,9 +53,9 @@ int main(int argc, char *argv[])
     // force-terminates Music/iTunes if anything still manages to fresh-
     // launch them. Both no-op on iOS / non-Apple. Stack lifetime — they
     // stop() in their destructors after app.exec() returns.
-    plyr::MusicBlocker musicBlocker;
+    concerto::MusicBlocker musicBlocker;
     musicBlocker.start();
-    plyr::cd::CdShield cdShield;
+    concerto::cd::CdShield cdShield;
     cdShield.start();
 
     PlaylistModel playlist;
@@ -202,7 +209,7 @@ int main(int argc, char *argv[])
     // CdShield is passed in so the Ripper can register a disc-appeared
     // listener — that's what wakes the WaitingForDisc → Identifying
     // transition without polling.
-    plyr::cd::Ripper ripper(&cdShield);
+    concerto::cd::Ripper ripper(&cdShield);
 
     // ---- CD rip streaming preview ------------------------------------
     // Raw-PCM signals from the worker → AudioEngine queued slots. CDDA
@@ -217,7 +224,7 @@ int main(int argc, char *argv[])
     // parent hierarchy — don't disturb a "just saved disc 1, playing
     // it" state. No-batch / first-disc-of-new-batch cases get handled
     // by `discTrackReady` (it falls back to opening the temp dir).
-    QObject::connect(&ripper, &plyr::cd::Ripper::previewStreamStart,
+    QObject::connect(&ripper, &concerto::cd::Ripper::previewStreamStart,
                      &audio,
                      [&audio, &playlist, &ripper](qint64 ms) {
                          audio.startPreviewStream(ms);
@@ -228,9 +235,9 @@ int main(int argc, char *argv[])
                          if (cur.startsWith(parent + QChar('/'))) return;
                          playlist.openFolder(parent);
                      });
-    QObject::connect(&ripper, &plyr::cd::Ripper::previewPcm,
+    QObject::connect(&ripper, &concerto::cd::Ripper::previewPcm,
                      &audio,  &AudioEngine::pushPreviewPcm);
-    QObject::connect(&ripper, &plyr::cd::Ripper::previewStreamStop,
+    QObject::connect(&ripper, &concerto::cd::Ripper::previewStreamStop,
                      &audio,  &AudioEngine::stopPreviewStream);
 
     // discTrackReady: each FLAC encode lands. Decide where the main
@@ -244,7 +251,7 @@ int main(int argc, char *argv[])
     //     open the temp dir itself; same appendTrack flow.
     // Streaming preview is doing the actual audio either way — we
     // don't setCurrentIndex / play here.
-    QObject::connect(&ripper, &plyr::cd::Ripper::discTrackReady,
+    QObject::connect(&ripper, &concerto::cd::Ripper::discTrackReady,
                      &playlist,
                      [&playlist, &ripper](const QString& tempDir,
                                           const QString& flacPath,
@@ -268,7 +275,7 @@ int main(int argc, char *argv[])
     // is currently in (without triggering playAt — advancingByEngine
     // suppresses that), and let the preview run out naturally. The
     // user picks a track or seeks to switch into FLAC playback.
-    QObject::connect(&ripper, &plyr::cd::Ripper::discSaved,
+    QObject::connect(&ripper, &concerto::cd::Ripper::discSaved,
                      &playlist,
                      [&playlist, &audio, &ripper, &advancingByEngine]
                      (const QString& fromTempDir, const QString& finalPath) {
@@ -370,7 +377,7 @@ int main(int argc, char *argv[])
         // Qt 6.9+ NoTitleBarBackgroundHint flag (set in Main.qml) makes
         // the title-bar background transparent, but the title text still
         // renders on top. Hide it natively.
-        plyr::hideMacWindowTitle(w);
+        concerto::hideMacWindowTitle(w);
 #endif
     }
 

@@ -21,7 +21,7 @@
 
 class QThread;
 
-namespace plyr::cd {
+namespace concerto::cd {
 
 class CdShield;
 class RipWorker;
@@ -319,4 +319,4 @@ private:
     QVariantList m_resumableBatches;
 };
 
-} // namespace plyr::cd
+} // namespace concerto::cd

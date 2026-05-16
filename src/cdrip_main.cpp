@@ -1,4 +1,4 @@
-// cdrip_cli — incremental CLI harness for plyr::cd::CdDevice / CdShield.
+// cdrip_cli — incremental CLI harness for concerto::cd::CdDevice / CdShield.
 //
 // Modes:
 //   (default)    Enumerate visible optical drives.
@@ -65,7 +65,7 @@
 #endif
 
 static int runEnumerate() {
-    const auto drives = plyr::cd::CdDevice::enumerate();
+    const auto drives = concerto::cd::CdDevice::enumerate();
     std::printf("found %zu optical drive%s with media\n",
                 drives.size(), drives.size() == 1 ? "" : "s");
     for (size_t i = 0; i < drives.size(); ++i) {
@@ -82,7 +82,7 @@ static int runEnumerate() {
 
 static int runShield() {
 #ifdef CONCERTO_HAS_CD_SHIELD
-    plyr::cd::CdShield shield;
+    concerto::cd::CdShield shield;
     shield.start();
     std::fprintf(stderr,
         "[shield] active. insert a CD — Music.app should NOT launch.\n"
@@ -103,7 +103,7 @@ static int runShield() {
 // Bridge our LBA-based TOC into the arverify form, which uses absolute
 // frame addresses (track 1 sits at kLeadInFrames = 150, lead-out is one
 // past the last track). The arverify disc-ID math only needs offsets.
-static arverify::DiscToc toArverifyToc(const plyr::cd::Toc& src) {
+static arverify::DiscToc toArverifyToc(const concerto::cd::Toc& src) {
     arverify::DiscToc out;
     out.trackOffsets.reserve(src.tracks.size());
     for (const auto& t : src.tracks) {
@@ -114,7 +114,7 @@ static arverify::DiscToc toArverifyToc(const plyr::cd::Toc& src) {
 }
 
 static int runReadToc() {
-    const auto drives = plyr::cd::CdDevice::enumerate();
+    const auto drives = concerto::cd::CdDevice::enumerate();
     if (drives.empty()) {
         std::fprintf(stderr, "cdrip_cli: no optical drives with media\n");
         return EXIT_FAILURE;
@@ -126,7 +126,7 @@ static int runReadToc() {
                 d.product.empty() ? "?" : d.product.c_str(),
                 d.revision.empty() ? "?" : d.revision.c_str());
 
-    auto dev = plyr::cd::CdDevice::open(d.id);
+    auto dev = concerto::cd::CdDevice::open(d.id);
     if (!dev) {
         std::fprintf(stderr, "open(%s) failed (errno=%d)\n",
                      d.id.c_str(), errno);
@@ -170,7 +170,7 @@ static int runReadToc() {
     std::printf("  CDDB:          %08x\n", ids.cddbId);
     std::printf("  MusicBrainz:   %s\n", ids.musicBrainzDiscId.c_str());
 
-    const auto offsetOpt = plyr::cd::lookupDriveOffset(d.vendor, d.product);
+    const auto offsetOpt = concerto::cd::lookupDriveOffset(d.vendor, d.product);
     if (offsetOpt) {
         std::printf("\ndrive offset:  %+d samples (would be applied by --rip)\n",
                     *offsetOpt);
@@ -187,7 +187,7 @@ static int runReadToc() {
 // what the TOC implies. If `cap` is non-zero, stop after that many
 // sectors (smoke-testing); otherwise read to the lead-out.
 static int runReadAll(uint32_t cap) {
-    const auto drives = plyr::cd::CdDevice::enumerate();
+    const auto drives = concerto::cd::CdDevice::enumerate();
     if (drives.empty()) {
         std::fprintf(stderr, "cdrip_cli: no optical drives with media\n");
         return EXIT_FAILURE;
@@ -199,7 +199,7 @@ static int runReadAll(uint32_t cap) {
                 d.product.empty()  ? "?" : d.product.c_str(),
                 d.revision.empty() ? "?" : d.revision.c_str());
 
-    auto dev = plyr::cd::CdDevice::open(d.id);
+    auto dev = concerto::cd::CdDevice::open(d.id);
     if (!dev) {
         std::fprintf(stderr, "open(%s) failed (errno=%d)\n", d.id.c_str(), errno);
         return EXIT_FAILURE;
@@ -238,7 +238,7 @@ static int runReadAll(uint32_t cap) {
         std::span<uint8_t> view(buf.data(), uint64_t{n} * 2352);
 
         const auto r = dev->readSectors(lba, n, view, /*wantC2=*/false);
-        if (r.status != plyr::cd::ReadStatus::Ok) {
+        if (r.status != concerto::cd::ReadStatus::Ok) {
             std::fprintf(stderr,
                 "\nread failed at LBA %d (%u sectors requested, %u returned): %s\n",
                 lba, n, r.sectorsRead, dev->lastDeviceError().c_str());
@@ -285,16 +285,16 @@ struct ZeroFilledRange {
 // strategy cdparanoia / EAC use for "unrecoverable" sectors. AR's first/
 // last 5-sector skip windows + the disc-wide AR/CTDB cross-check are
 // the actual safety nets.
-static bool readWithRetry(plyr::cd::CdDevice& dev,
+static bool readWithRetry(concerto::cd::CdDevice& dev,
                           int32_t lba, uint32_t count,
                           std::span<uint8_t> buf,
                           bool& outZeroFilled,
                           std::string& outLastError) {
     constexpr int kMaxRetries = 2;
-    plyr::cd::ReadResult r;
+    concerto::cd::ReadResult r;
     for (int attempt = 0; attempt <= kMaxRetries; ++attempt) {
         r = dev.readSectors(lba, count, buf, /*wantC2=*/false);
-        if (r.status == plyr::cd::ReadStatus::Ok && r.sectorsRead == count) {
+        if (r.status == concerto::cd::ReadStatus::Ok && r.sectorsRead == count) {
             outZeroFilled = false;
             if (attempt > 0) {
                 std::printf("  recovered LBA %d (+%u) on retry %d\n",
@@ -304,9 +304,9 @@ static bool readWithRetry(plyr::cd::CdDevice& dev,
             return true;
         }
         // Non-transient — no point hammering.
-        if (r.status == plyr::cd::ReadStatus::OutOfRange
-            || r.status == plyr::cd::ReadStatus::FatalDeviceError
-            || r.status == plyr::cd::ReadStatus::Aborted) {
+        if (r.status == concerto::cd::ReadStatus::OutOfRange
+            || r.status == concerto::cd::ReadStatus::FatalDeviceError
+            || r.status == concerto::cd::ReadStatus::Aborted) {
             break;
         }
     }
@@ -363,7 +363,7 @@ enum class DiscKind {
     Empty,       // no tracks (shouldn't happen)
 };
 
-static DiscKind classifyDisc(const plyr::cd::Toc& toc) {
+static DiscKind classifyDisc(const concerto::cd::Toc& toc) {
     if (toc.tracks.empty()) return DiscKind::Empty;
     bool hasAudio = false, hasData = false;
     for (const auto& t : toc.tracks) {
@@ -386,7 +386,7 @@ static std::string cueQuote(const std::string& s) {
 }
 
 static void writeCueSheet(const std::string& outDir,
-                          const plyr::cd::Toc& toc,
+                          const concerto::cd::Toc& toc,
                           const musicbrainz::Release* mb) {
     const std::string path = outDir + "/cd_rip.cue";
     std::FILE* f = std::fopen(path.c_str(), "w");
@@ -422,8 +422,8 @@ static void writeCueSheet(const std::string& outDir,
 }
 
 static void writeRipLog(const std::string& outDir,
-                        const plyr::cd::DriveInfo& drive,
-                        const plyr::cd::Toc& toc,
+                        const concerto::cd::DriveInfo& drive,
+                        const concerto::cd::Toc& toc,
                         const arverify::DiscIds& ids,
                         int offset, bool offsetFromDb,
                         const musicbrainz::Release* mb,
@@ -520,7 +520,7 @@ static int runRip(const char* outDir) {
         return EXIT_FAILURE;
     }
 
-    const auto drives = plyr::cd::CdDevice::enumerate();
+    const auto drives = concerto::cd::CdDevice::enumerate();
     if (drives.empty()) {
         std::fprintf(stderr, "cdrip_cli: no optical drives with media\n");
         return EXIT_FAILURE;
@@ -532,7 +532,7 @@ static int runRip(const char* outDir) {
                 d.product.empty()  ? "?" : d.product.c_str(),
                 d.revision.empty() ? "?" : d.revision.c_str());
 
-    auto dev = plyr::cd::CdDevice::open(d.id);
+    auto dev = concerto::cd::CdDevice::open(d.id);
     if (!dev) {
         std::fprintf(stderr, "open(%s) failed (errno=%d)\n", d.id.c_str(), errno);
         return EXIT_FAILURE;
@@ -602,7 +602,7 @@ static int runRip(const char* outDir) {
 
     // Drive-offset lookup. nullopt -> rip at offset 0 and let the verifier
     // scan it out post-hoc, same as the no-offset case.
-    const auto offsetOpt = plyr::cd::lookupDriveOffset(d.vendor, d.product);
+    const auto offsetOpt = concerto::cd::lookupDriveOffset(d.vendor, d.product);
     const int  offset    = offsetOpt.value_or(0);
     if (offsetOpt) {
         std::printf("drive offset: %+d samples (from drive DB)\n", offset);
@@ -792,13 +792,13 @@ static int runRip(const char* outDir) {
 }
 
 static int runEject() {
-    const auto drives = plyr::cd::CdDevice::enumerate();
+    const auto drives = concerto::cd::CdDevice::enumerate();
     if (drives.empty()) {
         std::fprintf(stderr, "cdrip_cli: no optical drives with media\n");
         return EXIT_FAILURE;
     }
     const auto& d = drives[0];
-    auto dev = plyr::cd::CdDevice::open(d.id);
+    auto dev = concerto::cd::CdDevice::open(d.id);
     if (!dev) {
         std::fprintf(stderr, "open(%s) failed (errno=%d)\n", d.id.c_str(), errno);
         return EXIT_FAILURE;
@@ -812,20 +812,20 @@ static int runEject() {
 }
 
 static int runDbInfo() {
-    const int n = plyr::cd::driveOffsetTableSize();
+    const int n = concerto::cd::driveOffsetTableSize();
     std::printf("AccurateRip drive-offset table: %d entries bundled.\n", n);
     if (n == 0) {
         std::fprintf(stderr,
             "  (resource didn't load — Qt qrc :/drive_offsets.json missing?)\n");
         return EXIT_FAILURE;
     }
-    const auto sample = plyr::cd::sampleDriveNames(8);
+    const auto sample = concerto::cd::sampleDriveNames(8);
     std::printf("sample entries:\n");
     for (const auto& s : sample) std::printf("  %s\n", s.c_str());
     std::printf("\n");
     std::printf("local overrides (always tried first):\n");
     std::printf("  APPLE SUPERDRIVE -> %+d\n",
-                plyr::cd::lookupDriveOffset("APPLE", "SUPERDRIVE").value_or(0));
+                concerto::cd::lookupDriveOffset("APPLE", "SUPERDRIVE").value_or(0));
     return EXIT_SUCCESS;
 }
 
@@ -835,8 +835,8 @@ int main(int argc, char** argv) {
     // --shield is compatible — Qt and CoreFoundation share the same
     // main run loop on macOS.
     QCoreApplication app(argc, argv);
-    QCoreApplication::setApplicationName("cdrip_cli");
-    QCoreApplication::setOrganizationName("Concerto");
+    QCoreApplication::setApplicationName("Concerto");
+    QCoreApplication::setOrganizationName("Thompson");
 
     for (int i = 1; i < argc; ++i) {
         if (std::strcmp(argv[i], "--shield")  == 0) return runShield();

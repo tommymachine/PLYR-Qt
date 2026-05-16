@@ -772,9 +772,9 @@ void AudioWorker::tickLookahead()
     qint64 offsetBytes = -1;  // -1 = analytic not available, use fallback
 
 #ifdef Q_OS_MACOS
-    plyr::sync::AudioClock*   ac =
+    concerto::sync::AudioClock*   ac =
         m_audioClockAtom.load(std::memory_order_acquire);
-    plyr::sync::DisplayClock* dc =
+    concerto::sync::DisplayClock* dc =
         m_displayClockAtom.load(std::memory_order_acquire);
     if (ac && dc) {
         auto aOpt = ac->load();
@@ -809,7 +809,7 @@ void AudioWorker::tickLookahead()
             // consuming at SR samples/second since H_a. We still validate
             // that the anchor exists (proves the AU is alive) and read
             // SR + L_out from it.
-            const double now    = plyr::sync::AudioClock::nowSeconds();
+            const double now    = concerto::sync::AudioClock::nowSeconds();
             const double deltaS = dOpt->targetPresentationSec - now
                                    - aOpt->outputLatencySec;
             // leadFrames is the number of audio frames the pipe playhead
@@ -887,8 +887,8 @@ void AudioWorker::setSyncCalibrationMs(int ms)
 }
 
 #ifdef Q_OS_MACOS
-void AudioWorker::setClocksForLookahead(plyr::sync::AudioClock*   audio,
-                                        plyr::sync::DisplayClock* display)
+void AudioWorker::setClocksForLookahead(concerto::sync::AudioClock*   audio,
+                                        concerto::sync::DisplayClock* display)
 {
     // Called from main thread. Atomic store with release so the audio-
     // thread tick's acquire load sees consistent pointers.

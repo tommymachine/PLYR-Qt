@@ -1,4 +1,4 @@
-// macOS implementation of plyr::cd::CdDevice.
+// macOS implementation of concerto::cd::CdDevice.
 //
 // MVP steps 1-2:
 //   * enumerate() — IOKit registry walk for IOCDMedia entries (one per
@@ -46,7 +46,7 @@
 #include <utility>
 #include <vector>
 
-namespace plyr::cd {
+namespace concerto::cd {
 
 namespace {
 
@@ -532,4 +532,4 @@ std::unique_ptr<CdDevice> CdDevice::open(const std::string& id) {
     return std::make_unique<CdDeviceMac>(std::move(info), fd);
 }
 
-} // namespace plyr::cd
+} // namespace concerto::cd

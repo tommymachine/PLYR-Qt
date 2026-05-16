@@ -38,7 +38,7 @@
   #endif
 #endif
 
-namespace plyr::cd {
+namespace concerto::cd {
 
 #ifdef CONCERTO_HAS_CD_SHIELD
 
@@ -93,4 +93,4 @@ public:
 
 #endif
 
-} // namespace plyr::cd
+} // namespace concerto::cd

@@ -8,7 +8,12 @@
 #include "DriveOffsetDb.h"
 #include "FlacDecode.h"
 #include "FlacEncode.h"
+#include "FlacTags.h"
+#include "MetadataResolver.h"
+#include "MetadataScoring.h"
 #include "MusicBrainz.h"
+#include "PendingSubmissions.h"
+#include "SystemPaths.h"
 
 #include <QDateTime>
 #include <QDir>
@@ -18,7 +23,6 @@
 #include <QNetworkReply>
 #include <QNetworkRequest>
 #include <QRegularExpression>
-#include <QStandardPaths>
 #include <QStringList>
 #include <QUuid>
 
@@ -36,7 +40,7 @@
 #include <string>
 #include <vector>
 
-namespace plyr::cd {
+namespace concerto::cd {
 
 namespace {
 
@@ -53,7 +57,7 @@ constexpr uint32_t kReadChunkSectors = 27;
 // 2352-byte sector goes in at the position it was read, with no offset
 // correction. Lets a force-quit mid-rip resume at LBA granularity instead
 // of having to re-read tracks that hadn't finished encoding yet. The
-// design brief lives in the project memory under "PLYR-Qt CD ripper
+// design brief lives in the project memory under "Concerto CD ripper
 // direction" — search for the "LBA-granular resume" section.
 constexpr const char* kRawSidecarName = "cd_rip.raw";
 
@@ -80,7 +84,7 @@ QByteArray httpGet(QNetworkAccessManager& nam, const QUrl& url, int& status) {
     return body;
 }
 
-// Bridge plyr::cd::Toc into the arverify-side TOC (absolute, 150-based).
+// Bridge concerto::cd::Toc into the arverify-side TOC (absolute, 150-based).
 arverify::DiscToc toArverifyToc(const Toc& src) {
     arverify::DiscToc out;
     out.trackOffsets.reserve(src.tracks.size());
@@ -143,8 +147,10 @@ QVariantList tracksWithMbTitles(const QVariantList& src,
     return out;
 }
 
-// Duplicated from cdrip_main.cpp::tagsForTrack. Will move to a shared
-// header once the rip code stabilizes.
+// Legacy tag builder — used as a fallback when the resolver hasn't
+// produced an AlbumMeta yet (e.g. MB unreachable on Stage 1). When the
+// resolver supplies an album, concerto::metadata::buildVorbisTags() (in
+// FlacTags.h) produces the rich classical tag set instead.
 std::vector<flacencode::VorbisTag> tagsForTrack(
     const musicbrainz::Release& rel,
     int trackIndex0Based,
@@ -526,6 +532,53 @@ void RipWorker::doRip(const QString& bsdName,
         return;
     }
 
+    // --- Resolve rich metadata via the v1 pipeline ------------------
+    // Single async resolver call; we block on `resolved` via QEventLoop
+    // at this stage boundary (mirrors the existing pattern used elsewhere
+    // in this file). The new async client is the foundation for moving
+    // the resolver fully off the nested-event-loop pattern; the eventual
+    // shape is one resolver kicked off in parallel with the read loop,
+    // pumped via QCoreApplication::processEvents at well-defined yield
+    // points. v1 keeps it synchronous to avoid touching the read loop.
+    concerto::metadata::AlbumMeta resolvedAlbum;
+    {
+        concerto::metadata::MetadataResolver resolver;
+        resolver.setUserAgent(QString::fromLatin1(kUserAgent));
+
+        concerto::metadata::MetadataResolver::Request mreq;
+        mreq.discId      = QString::fromStdString(ids.musicBrainzDiscId);
+        mreq.trackCount  = static_cast<int>(toc.tracks.size());
+        mreq.tocSummary.discId      = mreq.discId;
+        mreq.tocSummary.trackCount  = mreq.trackCount;
+        mreq.tocSummary.trackLengthsSec.reserve(toc.tracks.size());
+        for (size_t i = 0; i < toc.tracks.size(); ++i) {
+            const uint32_t nextLba = (i + 1 < toc.tracks.size())
+                ? toc.tracks[i + 1].startLba : toc.leadOutLba;
+            mreq.tocSummary.trackLengthsSec.push_back(
+                static_cast<int>((nextLba - toc.tracks[i].startLba) / 75));
+        }
+        mreq.tocForSubmissions.firstTrack = toc.tracks.front().trackNumber;
+        mreq.tocForSubmissions.lastTrack  = toc.tracks.back().trackNumber;
+        mreq.tocForSubmissions.leadoutLba = toc.leadOutLba;
+        for (const auto& t : toc.tracks)
+            mreq.tocForSubmissions.offsets.push_back(t.startLba + 150);
+
+        QEventLoop loop;
+        QObject::connect(&resolver, &concerto::metadata::MetadataResolver::resolved,
+                         &loop, [&](const concerto::metadata::AlbumMeta& a,
+                                    const QString& /*src*/) {
+                             resolvedAlbum = a;
+                             loop.quit();
+                         });
+        resolver.resolve(mreq);
+        loop.exec();
+    }
+
+    if (m_cancel.load(std::memory_order_acquire)) {
+        emit ripCancelled();
+        return;
+    }
+
     // --- Allocate padded disc buffer + temp dir ---------------------
     const uint32_t padSectors    = static_cast<uint32_t>(
         (std::abs(driveOffset) + 587) / 588) + 1;
@@ -623,12 +676,10 @@ void RipWorker::doRip(const QString& bsdName,
             }
             tempDir = candidate;
         } else {
-            const QString rootData = QStandardPaths::writableLocation(
-                QStandardPaths::GenericDataLocation);
             const QString uuid = QUuid::createUuid().toString(QUuid::WithoutBraces)
                                      .remove(QChar('-'));
-            tempDir = rootData
-                + QStringLiteral("/Concerto/rip_in_progress/") + uuid;
+            tempDir = concerto::paths::appDataDir()
+                + QStringLiteral("/rip_in_progress/") + uuid;
         }
     }
     if (!QDir().mkpath(tempDir)) {
@@ -939,7 +990,11 @@ void RipWorker::doRip(const QString& bsdName,
                 tempDir.toStdString() + "/" + filename;
 
             std::vector<flacencode::VorbisTag> tags;
-            if (chosen) {
+            if (!resolvedAlbum.isEmpty()
+                && resolvedAlbum.sourceTag != QLatin1String("stub")) {
+                tags = concerto::metadata::buildVorbisTags(
+                    resolvedAlbum, static_cast<int>(encodedThrough));
+            } else if (chosen) {
                 tags = tagsForTrack(*chosen, static_cast<int>(encodedThrough),
                                     ids.musicBrainzDiscId);
             }
@@ -1354,4 +1409,4 @@ void RipWorker::doSave(const QString& parentFolder, const QString& folderName) {
     emit discSaved(fromTemp, QString::fromStdString(dst.string()));
 }
 
-} // namespace plyr::cd
+} // namespace concerto::cd

@@ -26,7 +26,7 @@
 #include <memory>
 
 #ifdef Q_OS_MACOS
-namespace plyr::sync {
+namespace concerto::sync {
 class AudioClock;
 class DisplayClock;
 }
@@ -202,7 +202,7 @@ private:
     // screen. AudioWorker reads both via non-owning pointers (set up
     // after construction below) and feeds the FFT/Features tap from
     // the exact playhead sample for that scanout.
-    std::unique_ptr<plyr::sync::AudioClock>   m_audioClock;
-    std::unique_ptr<plyr::sync::DisplayClock> m_displayClock;
+    std::unique_ptr<concerto::sync::AudioClock>   m_audioClock;
+    std::unique_ptr<concerto::sync::DisplayClock> m_displayClock;
 #endif
 };

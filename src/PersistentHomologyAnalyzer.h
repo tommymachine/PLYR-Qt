@@ -15,7 +15,7 @@
 // behind RIPSER_NO_MAIN and (b) replace its stdout-based barcode
 // emission with two extern callbacks (ripser_emit_pair /
 // ripser_begin_dim). The patch is documented in
-// third_party/ripser/PLYR_QT.patch.
+// third_party/ripser/CONCERTO.patch.
 //
 // Pipeline:
 //   1. On every mfccSource->mfccUpdated tick, increment a hop counter.

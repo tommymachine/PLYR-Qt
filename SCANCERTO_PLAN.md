@@ -20,7 +20,7 @@ If you're picking this up cold:
 Click the 💿 button in the header → opens a non-modal `RipView` popup
 (880×600) over the main player.
 
-States, driven by `plyr::cd::Ripper::State`:
+States, driven by `concerto::cd::Ripper::State`:
 
 | State          | What's on screen                                     |
 |----------------|------------------------------------------------------|
@@ -114,7 +114,7 @@ new conversation.
 └──────────────────────────────┘
 ```
 
-### `plyr::cd::Ripper` (`src/Ripper.{h,cpp}`)
+### `concerto::cd::Ripper` (`src/Ripper.{h,cpp}`)
 
 `QObject`, lives on the GUI thread, exposed to QML as `ripper`.
 

@@ -1,5 +1,6 @@
 #include "FlacTags.h"
 
+#include <QDateTime>
 #include <QFile>
 
 namespace {
@@ -116,3 +117,103 @@ void FlacTags::parseVorbisComment(const QByteArray& data, FlacTags& out)
         out.tags.insert(raw.left(eq).toUpper(), raw.mid(eq + 1));
     }
 }
+
+
+namespace concerto::metadata {
+
+std::vector<flacencode::VorbisTag> buildVorbisTags(
+    const AlbumMeta& a, int i)
+{
+    std::vector<flacencode::VorbisTag> out;
+    auto add = [&](const char* field, const QString& value) {
+        if (!value.isEmpty())
+            out.emplace_back(field, value.toStdString());
+    };
+    auto addStd = [&](const char* field, const std::string& value) {
+        if (!value.empty()) out.emplace_back(field, value);
+    };
+
+    // Album-level fields.
+    add("ALBUM",            a.title);
+    add("ALBUMARTIST",      a.albumArtist.isEmpty() ? a.artistCredit : a.albumArtist);
+    add("ALBUMARTISTSORT",  QString());  // not yet plumbed from MB
+    add("ARTIST",           a.artistCredit);
+    add("DATE",             a.date);
+    if (!a.originalDate.isEmpty() && a.originalDate != a.date)
+        add("ORIGINALDATE", a.originalDate);
+    add("LABEL",            a.label);
+    add("CATALOGNUMBER",    a.catalogNumber);
+    add("BARCODE",          a.barcode);
+    add("ASIN",             a.asin);
+    add("RELEASECOUNTRY",   a.country);
+    add("DISCSUBTITLE",     a.discSubtitle);
+    if (a.discTotalCount > 0) {
+        addStd("DISCNUMBER",  std::to_string(a.discPosition));
+        addStd("TOTALDISCS",  std::to_string(a.discTotalCount));
+        addStd("DISCTOTAL",   std::to_string(a.discTotalCount));
+    }
+    addStd("TOTALTRACKS",  std::to_string(a.tracks.size()));
+    addStd("TRACKTOTAL",   std::to_string(a.tracks.size()));
+    add("MUSICBRAINZ_ALBUMID",        a.releaseId);
+    add("MUSICBRAINZ_RELEASEGROUPID", a.releaseGroupId);
+    add("MUSICBRAINZ_DISCID",         a.mbDiscId);
+    add("MUSICBRAINZ_ALBUMARTISTID",  a.albumArtistId);
+    for (const QString& g : a.genreNames) add("GENRE", g);
+
+    // Concerto provenance marker. Future identification passes (the
+    // folder-time library pipeline; see docs/LIBRARY_METADATA_PLAN.md
+    // §A.0 "Stage Z trust") read these and skip web lookup when the
+    // pipeline version is ≥ the consumer's expectation. Harmless to
+    // any tool that doesn't recognise it. Always emitted whenever
+    // Concerto wrote the tag bundle, regardless of which stage
+    // produced the data.
+    addStd("CONCERTO_PIPELINE_VERSION", std::string("1"));
+    add("CONCERTO_SOURCE",
+        a.sourceTag.isEmpty() ? QStringLiteral("unknown") : a.sourceTag);
+    add("CONCERTO_ENRICHED_AT",
+        QDateTime::currentDateTimeUtc().toString(Qt::ISODate));
+
+    if (i < 0 || i >= a.tracks.size()) return out;
+    const TrackMeta& t = a.tracks[i];
+
+    // Per-track fields.
+    add("TITLE",                  t.title);
+    addStd("TRACKNUMBER",         std::to_string(t.position));
+    add("WORK",                   t.workTitle);
+    add("MOVEMENTNAME",           t.movementName);
+    if (t.movementNumber > 0)
+        addStd("MOVEMENT",        std::to_string(t.movementNumber));
+    if (t.movementTotal > 0)
+        addStd("MOVEMENTTOTAL",   std::to_string(t.movementTotal));
+    if (!t.workTitle.isEmpty() || t.movementNumber > 0)
+        out.emplace_back("SHOWMOVEMENT", "1");
+    add("COMPOSER",               t.composerName);
+    add("COMPOSERSORT",           t.composerSort);
+    add("ISRC",                   t.isrc);
+    add("MUSICBRAINZ_TRACKID",    t.recordingId);
+    add("MUSICBRAINZ_WORKID",     t.workId);
+    add("MUSICBRAINZ_ARTISTID",   t.composerId);
+
+    for (const Performer& p : t.performers) {
+        if (p.role == QLatin1String("conductor")) {
+            add("CONDUCTOR", p.name);
+            continue;
+        }
+        // Picard convention: "Artist (instrument/role)".
+        QString label = p.name;
+        if (!p.attrs.isEmpty()) {
+            label += QStringLiteral(" (") + p.attrs.join(QStringLiteral(", "))
+                  + QLatin1Char(')');
+        } else if (p.role == QLatin1String("performing orchestra")) {
+            label += QStringLiteral(" (performing orchestra)");
+        } else if (p.role == QLatin1String("chorus master")) {
+            label += QStringLiteral(" (chorus master)");
+        } else if (p.role == QLatin1String("arranger")) {
+            label += QStringLiteral(" (arranger)");
+        }
+        add("PERFORMER", label);
+    }
+    return out;
+}
+
+} // namespace concerto::metadata

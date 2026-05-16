@@ -32,7 +32,7 @@
 
 #include <atomic>
 
-namespace plyr::sync {
+namespace concerto::sync {
 
 namespace {
 
@@ -53,16 +53,16 @@ double hostTicksToSeconds(uint64_t ticks)
 
 } // namespace
 
-} // namespace plyr::sync
+} // namespace concerto::sync
 
 // Bridging delegate for CADisplayLink. Plain Obj-C class — kept inside
 // the implementation file so the public header stays pure C++.
 @interface ConcertoDisplayLinkBridge : NSObject
-@property(nonatomic) void* implPtr;   // plyr::sync::DisplayClock::Impl*
+@property(nonatomic) void* implPtr;   // concerto::sync::DisplayClock::Impl*
 - (void)displayLinkTick:(CADisplayLink*)link;
 @end
 
-namespace plyr::sync {
+namespace concerto::sync {
 
 struct DisplayClock::Impl {
     bool                       m_attached     = false;
@@ -233,7 +233,7 @@ std::optional<DisplayAnchor> DisplayClock::load() const
     return std::nullopt;
 }
 
-} // namespace plyr::sync
+} // namespace concerto::sync
 
 // -------- Objective-C delegate ------------------------------------------
 
@@ -242,7 +242,7 @@ std::optional<DisplayAnchor> DisplayClock::load() const
 - (void)displayLinkTick:(CADisplayLink*)link
 {
     if (!link || !self.implPtr) return;
-    auto* impl = static_cast<plyr::sync::DisplayClock::Impl*>(self.implPtr);
+    auto* impl = static_cast<concerto::sync::DisplayClock::Impl*>(self.implPtr);
 
     // CADisplayLink.targetTimestamp is the wall-clock instant the client
     // should target their render for — equivalent to the

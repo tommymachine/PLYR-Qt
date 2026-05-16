@@ -4,7 +4,7 @@
 
 #include <QWindow>
 
-namespace plyr {
+namespace concerto {
 
 void hideMacWindowTitle(QWindow* window)
 {
@@ -21,4 +21,4 @@ void hideMacWindowTitle(QWindow* window)
     ns.backgroundColor = [NSColor blackColor];
 }
 
-} // namespace plyr
+} // namespace concerto

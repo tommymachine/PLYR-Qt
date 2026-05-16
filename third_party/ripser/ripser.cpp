@@ -43,7 +43,7 @@
 
 //#define USE_ROBINHOOD_HASHMAP
 
-// PLYR-Qt vendoring patch:
+// Concerto vendoring patch:
 //   * RIPSER_NO_MAIN          -- fence main() so we can statically link
 //                                ripser.cpp as a library.
 //   * RIPSER_USE_OUTPUT_HOOK  -- replace stdout barcode prints with calls
@@ -85,7 +85,7 @@ typedef float value_t;
 typedef int64_t index_t;
 typedef uint16_t coefficient_t;
 
-// PLYR-Qt patch: barcode output hook. See top-of-file comment.
+// Concerto patch: barcode output hook. See top-of-file comment.
 #if defined(RIPSER_USE_OUTPUT_HOOK)
 extern void ripser_emit_pair(int dim, value_t birth, value_t death);
 extern void ripser_begin_dim(int dim);
@@ -529,7 +529,7 @@ public:
 	};
 
 	diameter_entry_t get_zero_pivot_facet(const diameter_entry_t simplex, const index_t dim) {
-		// PLYR-Qt patch: upstream uses a function-static enumerator
+		// Concerto patch: upstream uses a function-static enumerator
 		// here, which holds a reference to *this. That breaks if the
 		// process creates more than one ripser<> instance in its
 		// lifetime (the second-and-onward calls reference a freed
@@ -546,7 +546,7 @@ public:
 	}
 
 	diameter_entry_t get_zero_pivot_cofacet(const diameter_entry_t simplex, const index_t dim) {
-		// PLYR-Qt patch: see get_zero_pivot_facet above.
+		// Concerto patch: see get_zero_pivot_facet above.
 		simplex_coboundary_enumerator cofacets(*this);
 		cofacets.set_simplex(simplex, dim);
 		while (cofacets.has_next()) {
@@ -708,7 +708,7 @@ public:
 	diameter_entry_t init_coboundary_and_get_pivot(const diameter_entry_t simplex,
 	                                               Column& working_coboundary, const index_t& dim,
 	                                               entry_hash_map& pivot_column_index) {
-		// PLYR-Qt patch: drop `static`. See get_zero_pivot_facet above.
+		// Concerto patch: drop `static`. See get_zero_pivot_facet above.
 		simplex_coboundary_enumerator cofacets(*this);
 		bool check_for_emergent_pair = true;
 		cofacet_entries.clear();
@@ -732,7 +732,7 @@ public:
 	template <typename Column>
 	void add_simplex_coboundary(const diameter_entry_t simplex, const index_t& dim,
 	                            Column& working_reduction_column, Column& working_coboundary) {
-		// PLYR-Qt patch: drop `static`. See get_zero_pivot_facet above.
+		// Concerto patch: drop `static`. See get_zero_pivot_facet above.
 		simplex_coboundary_enumerator cofacets(*this);
 		working_reduction_column.push(simplex);
 		cofacets.set_simplex(simplex, dim);
@@ -1030,7 +1030,7 @@ template <> std::vector<diameter_index_t> ripser<sparse_distance_matrix>::get_ed
 	return edges;
 }
 
-// PLYR-Qt: everything below (file I/O, CLI driver) is needed only by the
+// Concerto: everything below (file I/O, CLI driver) is needed only by the
 // stand-alone CLI. Fence it out so we can link ripser.cpp as a library
 // without dragging in main(), the .lower_distance_matrix readers, etc.
 #ifndef RIPSER_NO_MAIN
@@ -1354,7 +1354,7 @@ int main(int argc, char** argv) {
 #endif  // RIPSER_NO_MAIN
 
 
-// PLYR-Qt trampoline. Compiled into the same TU as the templated
+// Concerto trampoline. Compiled into the same TU as the templated
 // ripser<> class so the C++ template instantiation happens exactly
 // once (here) and downstream callers can drive Ripser through a
 // stable extern-"C" entry point without #include'ing this 1300-line
@@ -1366,7 +1366,7 @@ int main(int argc, char** argv) {
 //
 // Output is captured via the ripser_begin_dim / ripser_emit_pair
 // hooks (also defined in PersistentHomologyAnalyzer.cpp).
-#if defined(RIPSER_PLYR_QT_TRAMPOLINE)
+#if defined(RIPSER_CONCERTO_TRAMPOLINE)
 extern "C" void phRunRipser(const float* lowerDistances, int n,
                             float threshold, int dimMax)
 {
@@ -1393,4 +1393,4 @@ extern "C" void phRunRipser(const float* lowerDistances, int n,
 		/*modulus=*/ coefficient_t(2)
 	).compute_barcodes();
 }
-#endif  // RIPSER_PLYR_QT_TRAMPOLINE
+#endif  // RIPSER_CONCERTO_TRAMPOLINE

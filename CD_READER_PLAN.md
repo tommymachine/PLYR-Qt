@@ -1,4 +1,4 @@
-# PLYR-Qt Native CD Reader (Task 3)
+# Concerto Native CD Reader (Task 3)
 
 The plan for the only remaining piece of the CD-rip stack: actually
 reading audio off a CD via native macOS APIs. Everything else around it
@@ -45,7 +45,7 @@ Existing CLI targets you can compose against or model on:
 These are settled in CDRIP_STRATEGY.md and not reopen-able here:
 
 - **Permissive license only.** No libcdio, libcdio-paranoia, or
-  cdparanoia in any form — those are GPL and would force PLYR-Qt to
+  cdparanoia in any form — those are GPL and would force Concerto to
   GPL.
 - **Native OS APIs, not subprocess wrappers.** Specifically: no
   shelling out to `cdparanoia` "as a temporary measure" — that's the
@@ -242,7 +242,7 @@ New files (add alongside the existing ones in `src/`):
   on Linux; SPTI on Windows. Pure C++ + platform frameworks. No Qt
   dependency. Sketch:
   ```cpp
-  namespace plyr::cd {
+  namespace concerto::cd {
 
   struct DriveInfo {
       std::string id;        // platform handle: BSD name / "/dev/sr0" / `\\?\...`
@@ -283,7 +283,7 @@ New files (add alongside the existing ones in `src/`):
       virtual std::optional<std::string> readIsrc(uint8_t track) = 0; // v2
   };
 
-  } // namespace plyr::cd
+  } // namespace concerto::cd
   ```
 
   Key shape decisions:

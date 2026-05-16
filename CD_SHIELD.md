@@ -6,7 +6,7 @@ duration of a rip session.
 
 ## The name
 
-`plyr::cd::CdShield` — a regular C++ class. No CLI, no IPC, no
+`concerto::cd::CdShield` — a regular C++ class. No CLI, no IPC, no
 background process. Just include the header and use it.
 
 ## Where it lives
@@ -15,9 +15,9 @@ background process. Just include the header and use it.
 | --- | --- |
 | Public interface | `src/CdShield.h` |
 | macOS implementation | `src/CdShield_macOS.cpp` |
-| Build wiring | `CMakeLists.txt` (already linked into `plyr_qt`) |
+| Build wiring | `CMakeLists.txt` (already linked into `concerto`) |
 
-Already part of the `plyr_qt` target. AppKit + DiskArbitration
+Already part of the `concerto` target. AppKit + DiskArbitration
 frameworks are linked alongside the existing macOS sources.
 
 ## How to use it from the rip view
@@ -36,7 +36,7 @@ public:
     Q_INVOKABLE void openRipView()  { shield_.start(); /* ...show UI...*/ }
     Q_INVOKABLE void closeRipView() { shield_.stop();  /* ...tear down...*/ }
 private:
-    plyr::cd::CdShield shield_;
+    concerto::cd::CdShield shield_;
 };
 ```
 
@@ -74,7 +74,7 @@ tears down the DA session. Discs return to normal handling.
 - It does **not** prevent Music from launching in response to other
   triggers (e.g., a media-key press). For belt-and-suspenders against
   the rare fresh-launch case, the same module ships
-  `plyr::MusicBlocker` (see `src/MusicBlocker.h`) — a `willLaunch`
+  `concerto::MusicBlocker` (see `src/MusicBlocker.h`) — a `willLaunch`
   observer that force-terminates Music if the OS tries to spin it up.
   Use it the same way as `CdShield` if you want both.
 - It does **not** filter to audio-only CDs. A data CD inserted while

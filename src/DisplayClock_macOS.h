@@ -32,7 +32,7 @@
 
 class QQuickWindow;
 
-namespace plyr::sync {
+namespace concerto::sync {
 
 struct DisplayAnchor {
     uint64_t version                = 0;
@@ -71,4 +71,4 @@ private:
     std::unique_ptr<Impl> m_impl;
 };
 
-} // namespace plyr::sync
+} // namespace concerto::sync

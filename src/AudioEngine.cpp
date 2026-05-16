@@ -69,8 +69,8 @@ AudioEngine::AudioEngine(QObject* parent)
     // first sink->start() (engineReady), so the AUHAL output is alive on
     // the same default device. DisplayClock::attach() runs from
     // attachToWindow() once QML has built its window.
-    m_audioClock   = std::make_unique<plyr::sync::AudioClock>();
-    m_displayClock = std::make_unique<plyr::sync::DisplayClock>();
+    m_audioClock   = std::make_unique<concerto::sync::AudioClock>();
+    m_displayClock = std::make_unique<concerto::sync::DisplayClock>();
 #endif
 
     connect(this, &AudioEngine::requestStartPreviewStream,

@@ -463,7 +463,7 @@ What we CAN see post-CIRC:
 Opinionated sketch:
 
 ```cpp
-namespace plyr::cd {
+namespace concerto::cd {
 
 struct DriveInfo {
     std::string id;            // platform-specific opaque handle string
@@ -531,7 +531,7 @@ public:
     virtual std::optional<std::string> readIsrc(uint8_t track) = 0;
 };
 
-} // namespace plyr::cd
+} // namespace concerto::cd
 ```
 
 Threading: `CdDevice` is *not* thread-safe. Calls are blocking; serialize at the caller. The ripper runs in a worker thread; UI thread observes progress via signals/callbacks.
@@ -562,7 +562,7 @@ Reference *behavior*, do NOT copy code. Most of the CD-DA-ripping ecosystem is G
 **Conceptual reference only (do NOT copy):**
 - **cdparanoia / paranoia FAQ pages** (xiph.org/paranoia) — explanatory text is fine to read for *what* the algorithm does; the source code is GPL. We don't plan to clone paranoia in v1 anyway.
 - **Hydrogenaudio Knowledgebase** — community documentation, free to read; describes EAC's secure-ripping technique without exposing GPL code (EAC itself is closed-source freeware).
-- **VLC's CD-DA module** — LGPL 2.1+. We could *link* against libvlc as an LGPL dep (LGPL is compatible with a permissive app) — but it's a heavy dependency for one use case, and PLYR-Qt's permissive stance is cleaner. Not recommended.
+- **VLC's CD-DA module** — LGPL 2.1+. We could *link* against libvlc as an LGPL dep (LGPL is compatible with a permissive app) — but it's a heavy dependency for one use case, and Concerto's permissive stance is cleaner. Not recommended.
 
 **Not useful for our purposes:**
 - **libcdio** — GPL; can't link, can't copy.

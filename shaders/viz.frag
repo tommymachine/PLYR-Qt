@@ -1,4 +1,4 @@
-// PLYR visualizer, fragment stage.
+// Concerto visualizer, fragment stage.
 //
 // For every pixel we invert two geometric series:
 //   1. Which band slot (0..BAND-1) contains our u?

@@ -23,7 +23,7 @@
 #include <memory>
 #include <optional>
 
-namespace plyr::sync {
+namespace concerto::sync {
 
 // Snapshot of the audio output clock at the moment of the latest
 // AURenderCallback that fired. All fields are valid only if version > 0.
@@ -77,4 +77,4 @@ private:
     std::unique_ptr<Impl> m_impl;
 };
 
-} // namespace plyr::sync
+} // namespace concerto::sync

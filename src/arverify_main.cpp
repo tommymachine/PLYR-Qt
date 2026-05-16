@@ -32,7 +32,7 @@ namespace {
 QTextStream out(stdout);
 QTextStream err(stderr);
 
-constexpr const char* kUserAgent = "plyr-arverify/0.1";
+constexpr const char* kUserAgent = "concerto-arverify/0.1";
 constexpr const char* kAccurateRipBase = "http://www.accuraterip.com/accuraterip/";
 constexpr const char* kCtdbBase = "http://db.cuetools.net/";
 
