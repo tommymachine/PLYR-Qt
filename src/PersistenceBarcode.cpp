@@ -264,8 +264,8 @@ void PersistenceBarcode::paint(QPainter* painter)
         painter->drawRoundedRect(r, 1.2, 1.2);
     }
 
-    // Axis labels (filtration radius). Menlo 8pt.
-    QFont monoFont("Menlo");
+    // Axis labels (filtration radius). Iosevka 8pt.
+    QFont monoFont("Iosevka");
     monoFont.setPixelSize(8);
     painter->setFont(monoFont);
     QFontMetrics fm(monoFont);

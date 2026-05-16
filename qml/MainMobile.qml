@@ -598,7 +598,7 @@ ApplicationWindow {
                                       : String(trackNumber).padStart(2, "0")
                                 color: row.current ? root.accent : Qt.rgba(1, 1, 1, 0.30)
                                 font.pixelSize: row.current ? 12 : 11
-                                font.family: "Menlo"
+                                font.family: "Iosevka"
                             }
                         }
 
@@ -622,7 +622,7 @@ ApplicationWindow {
                                     text: formatDuration(duration)
                                     color: row.current ? Qt.rgba(1, 1, 1, 0.65) : Qt.rgba(1, 1, 1, 0.28)
                                     font.pixelSize: 11
-                                    font.family: "Menlo"
+                                    font.family: "Iosevka"
                                 }
                             }
 
@@ -699,7 +699,7 @@ ApplicationWindow {
                         Text {
                             text: modelData.k
                             color: Qt.rgba(1, 1, 1, 0.45)
-                            font.family: "Menlo"
+                            font.family: "Iosevka"
                             font.pixelSize: 10
                             font.bold: true
                             Layout.preferredWidth: 80

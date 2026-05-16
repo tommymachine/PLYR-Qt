@@ -120,7 +120,7 @@ Item {
     }
 
     // ------------------------------------------------------------------
-    //  Top-right readout. Key name in bold Menlo; tiny confidence
+    //  Top-right readout. Key name in bold Iosevka; tiny confidence
     //  percentage subtitle. Matches the chrome style other visualizers
     //  use (TonnetzOverlay, SpectrumView).
     // ------------------------------------------------------------------
@@ -133,7 +133,7 @@ Item {
         Text {
             text: est.keyName.length > 0 ? est.keyName : "—"
             color: "white"
-            font.family: "Menlo"
+            font.family: "Iosevka"
             font.pixelSize: 14
             font.bold: true
             horizontalAlignment: Text.AlignRight
@@ -145,7 +145,7 @@ Item {
                   ? Math.round(est.keyConfidence * 100) + "%"
                   : ""
             color: Qt.rgba(1, 1, 1, 0.45)
-            font.family: "Menlo"
+            font.family: "Iosevka"
             font.pixelSize: 10
             horizontalAlignment: Text.AlignRight
             width: 110

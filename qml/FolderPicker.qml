@@ -274,7 +274,7 @@ Popup {
                             Layout.bottomMargin: 4
                             text: "FAVORITES"
                             color: Qt.rgba(1, 1, 1, 0.40)
-                            font.family: "Menlo"
+                            font.family: "Iosevka"
                             font.pixelSize: 9
                             font.bold: true
                         }
@@ -326,7 +326,7 @@ Popup {
                             Layout.bottomMargin: 4
                             text: "RECENTS"
                             color: Qt.rgba(1, 1, 1, 0.40)
-                            font.family: "Menlo"
+                            font.family: "Iosevka"
                             font.pixelSize: 9
                             font.bold: true
                         }
@@ -382,7 +382,7 @@ Popup {
                             Layout.bottomMargin: 4
                             text: "VOLUMES"
                             color: Qt.rgba(1, 1, 1, 0.40)
-                            font.family: "Menlo"
+                            font.family: "Iosevka"
                             font.pixelSize: 9
                             font.bold: true
                         }
@@ -507,7 +507,7 @@ Popup {
                             text: picker._displayPath(folderModel.folder)
                             color: "white"
                             font.pixelSize: 12
-                            font.family: "Menlo"
+                            font.family: "Iosevka"
                             elide: Text.ElideMiddle
                         }
                     }

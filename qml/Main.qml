@@ -13,6 +13,10 @@ ApplicationWindow {
     visible: true
     title: "Concerto"
     color: "black"
+    // Qt 6.9+ flags. Numeric values from qnamespace.h —
+    //   NoTitleBarBackgroundHint = 0x00800000  (titlebarAppearsTransparent;
+    //   the title text is hidden separately via macos_titlebar.mm)
+    flags: Qt.Window | 0x00800000
 
     // PLYR palette (mirrors the Swift version).
     readonly property color bg:          "black"
@@ -499,7 +503,7 @@ ApplicationWindow {
                         Text {
                             text: modelData.k
                             color: Qt.rgba(1, 1, 1, 0.45)
-                            font.family: "Menlo"
+                            font.family: "Iosevka"
                             font.pixelSize: 9
                             font.bold: true
                             Layout.preferredWidth: 70
@@ -709,7 +713,7 @@ ApplicationWindow {
                             }
                             color: root.primary
                             font.pixelSize: 11
-                            font.family: "Menlo"
+                            font.family: "Iosevka"
                         }
                     }
                 }
@@ -758,6 +762,64 @@ ApplicationWindow {
                     clip: true
                     model: playlist
                     spacing: 0
+
+                    // Safari-feel scroll tuning (mirrors PureBibleQt). Native
+                    // Qt Flickable wheel handling is step-based and coarse;
+                    // we replace it with a WheelHandler that applies pixel-
+                    // precise trackpad deltas directly and animates mouse-
+                    // wheel ticks with an OutQuint ease so rapid clicks
+                    // compound instead of cancelling.
+                    flickDeceleration: 350
+                    maximumFlickVelocity: 15000
+                    pixelAligned: true
+
+                    property real wheelTargetY: 0
+
+                    function clampY(y) {
+                        return Math.max(0, Math.min(listView.contentHeight - listView.height, y))
+                    }
+
+                    onMovingChanged:   if (moving)   wheelAnim.stop()
+                    onFlickingChanged: if (flicking) wheelAnim.stop()
+
+                    NumberAnimation {
+                        id: wheelAnim
+                        target: listView
+                        property: "contentY"
+                        duration: 220
+                        easing.type: Easing.OutQuint
+                    }
+
+                    WheelHandler {
+                        target: null
+                        acceptedDevices: PointerDevice.Mouse | PointerDevice.TouchPad
+                        onWheel: (event) => {
+                            // Trackpads / "smooth scrolling" mice deliver
+                            // pixelDelta — already OS-smoothed, apply directly.
+                            if (event.pixelDelta.y !== 0) {
+                                wheelAnim.stop()
+                                centerAnim.stop()
+                                listView.contentY = listView.clampY(
+                                    listView.contentY - event.pixelDelta.y)
+                                listView.wheelTargetY = listView.contentY
+                                event.accepted = true
+                                return
+                            }
+                            // Traditional wheel ticks — accumulate into a
+                            // target so successive clicks compound.
+                            const step = event.angleDelta.y
+                            const base = wheelAnim.running
+                                ? listView.wheelTargetY
+                                : listView.contentY
+                            listView.wheelTargetY = listView.clampY(base - step)
+                            centerAnim.stop()
+                            wheelAnim.stop()
+                            wheelAnim.from = listView.contentY
+                            wheelAnim.to   = listView.wheelTargetY
+                            wheelAnim.start()
+                            event.accepted = true
+                        }
+                    }
 
                     // Matches the Swift pre-port behaviour: every time
                     // currentIndex changes — startup, user pick, engine
@@ -862,7 +924,7 @@ ApplicationWindow {
                                     color: row.current ? root.accent
                                                        : Qt.rgba(1, 1, 1, 0.28)
                                     font.pixelSize: row.current ? 11 : 10
-                                    font.family: "Menlo"
+                                    font.family: "Iosevka"
                                 }
                             }
 
@@ -891,7 +953,7 @@ ApplicationWindow {
                                                ? Qt.rgba(1, 1, 1, 0.65)
                                                : Qt.rgba(1, 1, 1, 0.25)
                                         font.pixelSize: 10
-                                        font.family: "Menlo"
+                                        font.family: "Iosevka"
                                     }
                                 }
 
@@ -1028,7 +1090,7 @@ ApplicationWindow {
                     Text {
                         text: formatDuration(seekSlider.displayValue)
                         color: root.muted
-                        font.family: "Menlo"
+                        font.family: "Iosevka"
                         font.pixelSize: 10
                         Layout.preferredWidth: 48
                         horizontalAlignment: Text.AlignRight
@@ -1053,7 +1115,7 @@ ApplicationWindow {
                     Text {
                         text: formatDuration(audio.duration / 1000.0)
                         color: root.muted
-                        font.family: "Menlo"
+                        font.family: "Iosevka"
                         font.pixelSize: 10
                         Layout.preferredWidth: 48
                     }

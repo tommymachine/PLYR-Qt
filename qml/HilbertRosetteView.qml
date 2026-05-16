@@ -111,7 +111,7 @@ Item {
                         : hz.toFixed(0) + " Hz"
                 }
                 color: Qt.rgba(1, 1, 1, 0.55)
-                font.family: "Menlo"
+                font.family: "Iosevka"
                 font.pixelSize: 9
             }
         }
@@ -124,7 +124,7 @@ Item {
         anchors.margins: 12
         text: "HILBERT ROSETTE * 8 BANDS"
         color: Qt.rgba(1, 1, 1, 0.35)
-        font.family: "Menlo"
+        font.family: "Iosevka"
         font.pixelSize: 10
     }
 }

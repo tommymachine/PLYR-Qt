@@ -65,7 +65,7 @@ Item {
         anchors.margins: 12
         text: "TRAJECTORY * MFCC[1..13] -> PCA3"
         color: Qt.rgba(1, 1, 1, 0.35)
-        font.family: "Menlo"
+        font.family: "Iosevka"
         font.pixelSize: 10
     }
 
@@ -76,7 +76,7 @@ Item {
         visible: traj.filledRows < 600
         text: "ANALYZING..."
         color: Qt.rgba(1, 1, 1, 0.55)
-        font.family: "Menlo"
+        font.family: "Iosevka"
         font.pixelSize: 11
         font.bold: true
     }

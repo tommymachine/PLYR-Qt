@@ -87,7 +87,7 @@ Item {
         visible: !loader.loaded && root.ssmPath !== ""
         text: loader.error.length > 0 ? "SSM ERROR" : "ANALYZING…"
         color: Qt.rgba(1, 1, 1, 0.4)
-        font.family: "Menlo"
+        font.family: "Iosevka"
         font.pixelSize: 10
     }
 }

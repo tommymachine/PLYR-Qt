@@ -195,6 +195,7 @@ qt_add_qml_module(plyr_qt
         src/SystemPaths.cpp
         src/SystemPaths.h
         src/macos_prewarm.h
+        src/macos_titlebar.h
         src/MusicBlocker.h
         src/CdDevice.h
         src/CdShield.h
@@ -275,6 +276,7 @@ qt_add_resources(plyr_qt "plyr_qt_drive_offsets"
 if(APPLE AND NOT IOS)
     target_sources(plyr_qt PRIVATE
         src/macos_prewarm.mm
+        src/macos_titlebar.mm
         src/MusicBlocker_macOS.mm
         src/CdShield_macOS.cpp
         src/CdDevice_macOS.cpp
@@ -900,6 +902,7 @@ qt_add_resources(plyr_qt "milkdrop_presets"
 )
 
 set_target_properties(plyr_qt PROPERTIES
+    OUTPUT_NAME                  "Concerto"
     MACOSX_BUNDLE                TRUE
     MACOSX_BUNDLE_BUNDLE_NAME    "Concerto"
     MACOSX_BUNDLE_GUI_IDENTIFIER "com.thompson.concerto"

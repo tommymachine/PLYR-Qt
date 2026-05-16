@@ -493,7 +493,7 @@ void TonnetzView::paint(QPainter* painter)
 
         QFont f = painter->font();
         f.setPixelSize(10);
-        f.setFamily("Menlo");
+        f.setFamily("Iosevka");
         painter->setFont(f);
         painter->setPen(QColor(255, 196, 51, 220));
         painter->drawText(center + dirP5 * 0.65, "P5");
@@ -520,7 +520,7 @@ void TonnetzView::paint(QPainter* painter)
     if (m_showLabels) {
         QFont f = painter->font();
         f.setPixelSize(11);
-        f.setFamily("Menlo");
+        f.setFamily("Iosevka");
         f.setBold(true);
         painter->setFont(f);
         painter->setPen(m_labelColor);

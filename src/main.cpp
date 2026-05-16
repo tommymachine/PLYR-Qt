@@ -8,8 +8,12 @@
 #include "Ripper.h"
 #include "SystemPaths.h"
 #include "macos_prewarm.h"
+#ifdef Q_OS_MACOS
+#include "macos_titlebar.h"
+#endif
 
 #include <QDir>
+#include <QFont>
 #include <QGuiApplication>
 #include <QQmlApplicationEngine>
 #include <QQmlContext>
@@ -26,6 +30,8 @@ int main(int argc, char *argv[])
     QGuiApplication::setApplicationVersion("0.1");
     QGuiApplication::setOrganizationName("Thompson");
     QQuickStyle::setStyle("Basic");
+
+    QGuiApplication::setFont(QFont("Inter"));
 
     // macOS: pay the NSOpenPanel cold-start cost now (during app launch)
     // rather than later on the user's first Open Folder click — otherwise
@@ -360,6 +366,12 @@ int main(int argc, char *argv[])
     // (i.e. the CAMetalLayer exists). No-op on non-Mac builds.
     if (auto* w = qobject_cast<QQuickWindow*>(engine.rootObjects().first())) {
         audio.attachToWindow(w);
+#ifdef Q_OS_MACOS
+        // Qt 6.9+ NoTitleBarBackgroundHint flag (set in Main.qml) makes
+        // the title-bar background transparent, but the title text still
+        // renders on top. Hide it natively.
+        plyr::hideMacWindowTitle(w);
+#endif
     }
 
     return app.exec();

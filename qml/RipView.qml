@@ -340,7 +340,7 @@ Popup {
                     return ""
                 }
                 color: ripView.muted
-                font.family: "Menlo"
+                font.family: "Iosevka"
                 font.pixelSize: 10
             }
         }
@@ -404,7 +404,7 @@ Popup {
                     text: ripView.statusLine()
                     color: ripView.muted
                     font.pixelSize: 11
-                    font.family: "Menlo"
+                    font.family: "Iosevka"
                     horizontalAlignment: Text.AlignHCenter
                     verticalAlignment: Text.AlignTop
                     wrapMode: Text.WordWrap
@@ -524,7 +524,7 @@ Popup {
                                 + " saved"
                             color: ripView.muted
                             font.pixelSize: 10
-                            font.family: "Menlo"
+                            font.family: "Iosevka"
                         }
                         Text {
                             Layout.fillWidth: true
@@ -533,7 +533,7 @@ Popup {
                             text: "→ " + ripper.batchParentFolder
                             color: ripView.veryMuted
                             font.pixelSize: 9
-                            font.family: "Menlo"
+                            font.family: "Iosevka"
                             elide: Text.ElideMiddle
                         }
                     }
@@ -562,7 +562,7 @@ Popup {
                     Text {
                         text: "DRIVE"
                         color: ripView.muted
-                        font.family: "Menlo"; font.pixelSize: 9; font.bold: true
+                        font.family: "Iosevka"; font.pixelSize: 9; font.bold: true
                         Layout.preferredWidth: 64
                     }
                     Text {
@@ -580,7 +580,7 @@ Popup {
                     Text {
                         text: "MATCH"
                         color: ripView.muted
-                        font.family: "Menlo"; font.pixelSize: 9; font.bold: true
+                        font.family: "Iosevka"; font.pixelSize: 9; font.bold: true
                     }
                     ColumnLayout {
                         Layout.fillWidth: true
@@ -619,7 +619,7 @@ Popup {
                     Text {
                         text: "OFFSET"
                         color: ripView.muted
-                        font.family: "Menlo"; font.pixelSize: 9; font.bold: true
+                        font.family: "Iosevka"; font.pixelSize: 9; font.bold: true
                     }
                     ColumnLayout {
                         Layout.fillWidth: true
@@ -633,7 +633,7 @@ Popup {
                             color: ripper.discPresent
                                    ? ripView.primary : ripView.muted
                             font.pixelSize: 11
-                            font.family: "Menlo"
+                            font.family: "Iosevka"
                         }
                         Text {
                             Layout.fillWidth: true
@@ -659,7 +659,7 @@ Popup {
                 Text {
                     text: "TRACKS"
                     color: ripView.muted
-                    font.family: "Menlo"; font.pixelSize: 9; font.bold: true
+                    font.family: "Iosevka"; font.pixelSize: 9; font.bold: true
                     visible: ripper.discPresent
                 }
 
@@ -732,7 +732,7 @@ Popup {
                              + " / "
                              + ripView.fmtTime(ripView._trackDurationMs / 1000.0)
                         color: ripView.muted
-                        font.family: "Menlo"
+                        font.family: "Iosevka"
                         font.pixelSize: 9
                         Layout.preferredWidth: 78
                         horizontalAlignment: Text.AlignRight
@@ -916,7 +916,7 @@ Popup {
                                 color: (trackRow.isPlayingHere
                                         || trackRow.isReadingThis)
                                        ? ripView.accent : ripView.veryMuted
-                                font.family: "Menlo"; font.pixelSize: 10
+                                font.family: "Iosevka"; font.pixelSize: 10
                                 horizontalAlignment: Text.AlignRight
                             }
                             Item {
@@ -981,7 +981,7 @@ Popup {
                             Text {
                                 text: ripView.fmtTime(modelData.durationSec || 0)
                                 color: ripView.veryMuted
-                                font.family: "Menlo"; font.pixelSize: 10
+                                font.family: "Iosevka"; font.pixelSize: 10
                             }
                         }
                     }

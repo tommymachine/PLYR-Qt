@@ -171,7 +171,7 @@ Item {
             text: root._formatDb(root.value)
             color: Math.abs(root.value) < 0.1 ? root.muted : root.primary
             font.pixelSize: 10
-            font.family: "Menlo"
+            font.family: "Iosevka"
         }
     }
 }

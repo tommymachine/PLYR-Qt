@@ -79,7 +79,7 @@ Rectangle {
                 Text {
                     text: "SYNC TUNER"
                     color: "white"
-                    font.family: "Menlo"
+                    font.family: "Iosevka"
                     font.pixelSize: 10
                     font.bold: true
                 }
@@ -89,7 +89,7 @@ Rectangle {
                           + audio.syncCalibrationMs.toFixed(0) + " ms"
                           + (audio.outputIsBluetooth ? "  ·  BT" : "")
                     color: Qt.rgba(1, 1, 1, 0.55)
-                    font.family: "Menlo"
+                    font.family: "Iosevka"
                     font.pixelSize: 9
                 }
             }
@@ -132,7 +132,7 @@ Rectangle {
             horizontalAlignment: Text.AlignHCenter
             text: "dot flashes on each beat — adjust until flash + drum hit feel simultaneous"
             color: Qt.rgba(1, 1, 1, 0.35)
-            font.family: "Menlo"
+            font.family: "Iosevka"
             font.pixelSize: 8
             wrapMode: Text.WordWrap
         }

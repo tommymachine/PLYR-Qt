@@ -170,7 +170,7 @@ Item {
             anchors.centerIn: parent
             text: root.shaderLibrary[root.currentIndex].name + "  ›"  // U+203A SINGLE RIGHT-POINTING ANGLE QUOTATION MARK
             color: "white"
-            font.family: "Menlo"
+            font.family: "Iosevka"
             font.pixelSize: 10
         }
     }
@@ -182,7 +182,7 @@ Item {
         anchors.margins: 12
         text: root.shaderLibrary[root.currentIndex].desc
         color: Qt.rgba(1, 1, 1, 0.4)
-        font.family: "Menlo"
+        font.family: "Iosevka"
         font.pixelSize: 9
     }
 

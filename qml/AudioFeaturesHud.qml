@@ -49,7 +49,7 @@ Item {
                 Text {
                     text: modelData.label
                     color: "white"
-                    font.family: "Menlo"
+                    font.family: "Iosevka"
                     font.pixelSize: 10
                     width: 40
                 }
@@ -69,7 +69,7 @@ Item {
                 Text {
                     text: modelData.value().toFixed(2)
                     color: Qt.rgba(1, 1, 1, 0.65)
-                    font.family: "Menlo"
+                    font.family: "Iosevka"
                     font.pixelSize: 10
                     width: 36
                 }
@@ -82,7 +82,7 @@ Item {
             Text {
                 text: "RMS"
                 color: "white"
-                font.family: "Menlo"
+                font.family: "Iosevka"
                 font.pixelSize: 10
                 width: 40
             }
@@ -102,7 +102,7 @@ Item {
             Text {
                 text: audioFeatures.rms_att.toFixed(2)
                 color: Qt.rgba(1, 1, 1, 0.65)
-                font.family: "Menlo"
+                font.family: "Iosevka"
                 font.pixelSize: 10
                 width: 36
             }
@@ -114,13 +114,13 @@ Item {
             Text {
                 text: "centroid " + audioFeatures.centroid_hz.toFixed(0) + " Hz"
                 color: "white"
-                font.family: "Menlo"
+                font.family: "Iosevka"
                 font.pixelSize: 10
             }
             Text {
                 text: "phase " + audioFeatures.phase_corr.toFixed(2)
                 color: "white"
-                font.family: "Menlo"
+                font.family: "Iosevka"
                 font.pixelSize: 10
             }
             // Onset indicator. Goes opaque on each onset signal, fades

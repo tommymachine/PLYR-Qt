@@ -63,7 +63,7 @@ Item {
             anchors.centerIn: parent
             text: root.bundledPresets[root.currentIndex].name + "  ›"
             color: "white"
-            font.family: "Menlo"
+            font.family: "Iosevka"
             font.pixelSize: 10
         }
     }
@@ -75,7 +75,7 @@ Item {
         anchors.margins: 12
         text: root.bundledPresets[root.currentIndex].desc
         color: Qt.rgba(1, 1, 1, 0.4)
-        font.family: "Menlo"
+        font.family: "Iosevka"
         font.pixelSize: 9
     }
 
@@ -99,7 +99,7 @@ Item {
             horizontalAlignment: Text.AlignHCenter
             text: viz.lastError
             color: "white"
-            font.family: "Menlo"
+            font.family: "Iosevka"
             font.pixelSize: 10
         }
     }

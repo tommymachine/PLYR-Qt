@@ -248,7 +248,7 @@ Item {
             const charSweep  = totalSweep / n
             const baseAng    = -Math.PI / 2 - totalSweep / 2
 
-            ctx.font         = "bold " + fontPx + "px Menlo"
+            ctx.font         = "bold " + fontPx + "px Iosevka"
             ctx.textAlign    = "center"
             ctx.textBaseline = "middle"
             ctx.fillStyle    = "white"   // mask — shader colours it

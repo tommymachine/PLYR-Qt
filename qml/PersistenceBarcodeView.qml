@@ -85,7 +85,7 @@ Item {
         Text {
             text: "H0 / H1 PERSISTENCE BARCODE"
             color: Qt.rgba(1, 1, 1, 0.55)
-            font.family: "Menlo"
+            font.family: "Iosevka"
             font.pixelSize: 9
             font.bold: true
         }
@@ -94,7 +94,7 @@ Item {
                   + " * REFRESH " + (root.hopsPerCompute * 16) + "MS"
                   + " * COMPUTE " + (ph.lastComputeUsec / 1000.0).toFixed(1) + "MS"
             color: Qt.rgba(1, 1, 1, 0.3)
-            font.family: "Menlo"
+            font.family: "Iosevka"
             font.pixelSize: 8
         }
     }
@@ -118,7 +118,7 @@ Item {
             return "H1 LOOPS: " + count
         }
         color: Qt.rgba(0.2, 0.78, 1.0, 0.75)
-        font.family: "Menlo"
+        font.family: "Iosevka"
         font.pixelSize: 11
         font.bold: true
     }
@@ -132,7 +132,7 @@ Item {
         visible: !ph.hasData
         text: "ANALYZING..."
         color: Qt.rgba(0.2, 0.78, 1.0, 0.85)
-        font.family: "Menlo"
+        font.family: "Iosevka"
         font.pixelSize: 16
         font.bold: true
     }

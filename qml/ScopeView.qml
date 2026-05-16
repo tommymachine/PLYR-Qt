@@ -66,7 +66,7 @@ Item {
             anchors.centerIn: parent
             text: root.mode === ScopeView.Vectorscope ? "VECTOR" : "SCOPE"
             color: "white"
-            font.family: "Menlo"
+            font.family: "Iosevka"
             font.pixelSize: 9
             font.bold: true
         }
@@ -115,7 +115,7 @@ Item {
             anchors.leftMargin: 4
             text: "-1"
             color: Qt.rgba(1, 0.4, 0.4, 0.65)
-            font.family: "Menlo"
+            font.family: "Iosevka"
             font.pixelSize: 9
         }
 
@@ -126,7 +126,7 @@ Item {
             anchors.leftMargin: 22
             text: "-S"
             color: Qt.rgba(1, 1, 1, 0.30)
-            font.family: "Menlo"
+            font.family: "Iosevka"
             font.pixelSize: 9
         }
 
@@ -137,7 +137,7 @@ Item {
             anchors.horizontalCenterOffset: 6
             text: "0"
             color: Qt.rgba(1, 1, 1, 0.30)
-            font.family: "Menlo"
+            font.family: "Iosevka"
             font.pixelSize: 9
         }
 
@@ -148,7 +148,7 @@ Item {
             anchors.rightMargin: 22
             text: "+M"
             color: Qt.rgba(1, 1, 1, 0.30)
-            font.family: "Menlo"
+            font.family: "Iosevka"
             font.pixelSize: 9
         }
 
@@ -159,7 +159,7 @@ Item {
             anchors.rightMargin: 4
             text: "+1"
             color: Qt.rgba(0.4, 1, 0.4, 0.65)
-            font.family: "Menlo"
+            font.family: "Iosevka"
             font.pixelSize: 9
         }
 

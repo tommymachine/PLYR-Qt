@@ -192,7 +192,7 @@ Item {
             if (!root.showLabels) return
 
             ctx.fillStyle = root._labelMuted
-            ctx.font = "9px Menlo"
+            ctx.font = "9px Iosevka"
 
             // Frequency labels: anchored to the bottom edge.
             const fLabels = [
@@ -254,7 +254,7 @@ Item {
                          ? "+3 dB/oct"
                          : "+4.5 dB/oct")
                 color: "white"
-                font.family: "Menlo"
+                font.family: "Iosevka"
                 font.pixelSize: 9
                 font.bold: true
             }
@@ -292,7 +292,7 @@ Item {
                     return "1/" + inv + " OCT"
                 }
                 color: "white"
-                font.family: "Menlo"
+                font.family: "Iosevka"
                 font.pixelSize: 9
                 font.bold: true
             }
@@ -327,7 +327,7 @@ Item {
                 anchors.centerIn: parent
                 text: "RESET ∞"
                 color: "#FFCC88"
-                font.family: "Menlo"
+                font.family: "Iosevka"
                 font.pixelSize: 9
                 font.bold: true
             }

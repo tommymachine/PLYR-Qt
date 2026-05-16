@@ -106,7 +106,7 @@ Item {
                                   + eq.preamp.toFixed(1) + " dB"
                             color: root.primary
                             font.pixelSize: 11
-                            font.family: "Menlo"
+                            font.family: "Iosevka"
                             Layout.preferredWidth: 60
                         }
                     }
@@ -134,7 +134,7 @@ Item {
                             text: "Q " + eq.width.toFixed(2)
                             color: root.primary
                             font.pixelSize: 11
-                            font.family: "Menlo"
+                            font.family: "Iosevka"
                             Layout.preferredWidth: 60
                         }
                     }

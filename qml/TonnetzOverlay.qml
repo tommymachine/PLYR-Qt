@@ -6,7 +6,7 @@
 // Wires the CqtAnalyzer + ChromaAnalyzer pipeline behind a TonnetzView.
 // All audio binding goes through `audioSource` (default: the global
 // audioFeatures context property). The brightest-triad-name readout
-// lives in the bottom-right corner as a small Menlo label.
+// lives in the bottom-right corner as a small Iosevka label.
 
 import QtQuick
 import QtQuick.Controls
@@ -65,7 +65,7 @@ Item {
         anchors.margins: 12
         text:  tonnetz.brightestTriadLabel
         color: "white"
-        font.family: "Menlo"
+        font.family: "Iosevka"
         font.pixelSize: 11
         font.bold: true
     }

@@ -76,7 +76,7 @@ Item {
                    ? "Gray-Scott"
                    : "Chladni") + "  ›"
             color: "white"
-            font.family: "Menlo"
+            font.family: "Iosevka"
             font.pixelSize: 10
         }
     }
@@ -104,7 +104,7 @@ Item {
             anchors.centerIn: parent
             text: "Reset"
             color: "white"
-            font.family: "Menlo"
+            font.family: "Iosevka"
             font.pixelSize: 10
         }
     }
@@ -127,7 +127,7 @@ Item {
             text: "F=" + pde.gsLastFeed.toFixed(4)
                 + "  k=" + pde.gsLastKill.toFixed(4)
             color: Qt.rgba(1, 1, 1, 0.5)
-            font.family: "Menlo"
+            font.family: "Iosevka"
             font.pixelSize: 9
         }
     }
@@ -141,7 +141,7 @@ Item {
         text: "CHLADNI PLATE * (m, n) = "
               + pde.chladniM.toFixed(1) + ", " + pde.chladniN.toFixed(1)
         color: Qt.rgba(1, 1, 1, 0.4)
-        font.family: "Menlo"
+        font.family: "Iosevka"
         font.pixelSize: 9
     }
 }

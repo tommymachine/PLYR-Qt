@@ -110,7 +110,7 @@ Item {
             // octave, brighter at C-octaves (every nth octave is a power
             // of two of f_min, all of which are C-pitches when f_min is
             // 32.70).
-            ctx.font = "9px Menlo"
+            ctx.font = "9px Iosevka"
             ctx.textBaseline = "middle"
             ctx.textAlign = "left"
             ctx.fillStyle = root._labelMuted
