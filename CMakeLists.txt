@@ -145,7 +145,7 @@ qt_add_qml_module(plyr_qt
         qml/PLYRSeekSlider.qml
         qml/MarqueeText.qml
         qml/PlayingBars.qml
-        qml/SyncTuner.qml
+        # qml/SyncTuner.qml   # Re-enable alongside the SyncTuner{} block in Main.qml if A/V sync drifts.
         qml/EqPanel.qml
         qml/EqBandSlider.qml
         qml/EqPresetChip.qml

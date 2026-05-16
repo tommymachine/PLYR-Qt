@@ -980,11 +980,12 @@ ApplicationWindow {
 
                 // A/V sync calibration overlay — dot flashes on each
                 // detected onset; slider biases the analytic lookahead.
-                SyncTuner {
-                    anchors.bottom: parent.bottom
-                    anchors.right:  parent.right
-                    anchors.margins: 12
-                }
+                // Uncomment to bring back the tuner panel.
+                // SyncTuner {
+                //     anchors.bottom: parent.bottom
+                //     anchors.right:  parent.right
+                //     anchors.margins: 12
+                // }
 
                 // Drives the higher-level AudioFeatures pipeline at the
                 // same 60 Hz cadence: per-band envelope followers,
