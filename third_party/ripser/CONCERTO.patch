@@ -1,9 +1,9 @@
-PLYR-Qt vendoring patch for ripser.cpp
-=======================================
+Concerto vendoring patch for ripser.cpp
+========================================
 
 This documents the minimal, surgical edits applied to upstream
 ripser.cpp (Ulrich Bauer, MIT) so the file can be statically linked
-as a library into plyr_qt instead of running as a stand-alone CLI.
+as a library into concerto instead of running as a stand-alone CLI.
 The upstream source is otherwise untouched; in particular the
 persistence-homology algorithm itself is unchanged.
 
@@ -33,7 +33,7 @@ original ripser.cpp still builds unchanged with a plain
                             or any H>=1 feature that survives the
                             filtration threshold).
 
-  -DRIPSER_PLYR_QT_TRAMPOLINE  Appends one extern-"C" function at
+  -DRIPSER_CONCERTO_TRAMPOLINE Appends one extern-"C" function at
                             the bottom of the TU:
 
                                 void phRunRipser(const float* lowerDistances,
@@ -68,7 +68,7 @@ Edit summary (unified-diff style hunks, not literal `diff -u`):
   `#ifndef RIPSER_NO_MAIN ... #endif`.
 
 * A new section was appended at the very bottom of the file, behind
-  `#if defined(RIPSER_PLYR_QT_TRAMPOLINE)`, defining the extern-"C"
+  `#if defined(RIPSER_CONCERTO_TRAMPOLINE)`, defining the extern-"C"
   trampoline `phRunRipser`. It move-constructs a
   compressed_lower_distance_matrix from the caller's flat
   lower-triangular array and invokes ripser<...>::compute_barcodes()
@@ -98,10 +98,10 @@ Build invocation (CMakeLists.txt):
     target_compile_definitions(ripser PUBLIC
         RIPSER_NO_MAIN
         RIPSER_USE_OUTPUT_HOOK
-        RIPSER_PLYR_QT_TRAMPOLINE)
+        RIPSER_CONCERTO_TRAMPOLINE)
 
 Caller responsibility: provide ripser_begin_dim / ripser_emit_pair
-in some translation unit linked alongside ripser.cpp. PLYR-Qt does
+in some translation unit linked alongside ripser.cpp. Concerto does
 this in src/PersistentHomologyAnalyzer.cpp.
 
 The patch is reversible: each edit is bracketed and selectable by
