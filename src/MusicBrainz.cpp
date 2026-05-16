@@ -128,8 +128,11 @@ std::vector<Release> lookupByDiscId(QNetworkAccessManager& nam,
                                     int trackCount,
                                     const std::string& userAgent)
 {
+    // `inc=release-groups` brings the release-group object onto each
+    // release — its `id` is what multi-disc batches key on (same across
+    // every pressing of the same box-set release group).
     const QUrl url(QStringLiteral(
-            "https://musicbrainz.org/ws/2/discid/%1?fmt=json&inc=artist-credits+recordings")
+            "https://musicbrainz.org/ws/2/discid/%1?fmt=json&inc=artist-credits+recordings+release-groups")
         .arg(QString::fromStdString(discId)));
     const QByteArray body = httpGet(nam, url, QString::fromStdString(userAgent));
     if (body.isEmpty())
@@ -152,6 +155,8 @@ std::vector<Release> lookupByDiscId(QNetworkAccessManager& nam,
         const QJsonObject ro = rv.toObject();
         Release rel;
         rel.id      = ro.value("id").toString().toStdString();
+        rel.releaseGroupId =
+            ro.value("release-group").toObject().value("id").toString().toStdString();
         rel.title   = ro.value("title").toString().toStdString();
         rel.date    = ro.value("date").toString().toStdString();
         rel.country = ro.value("country").toString().toStdString();

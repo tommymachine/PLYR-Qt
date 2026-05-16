@@ -1,4 +1,5 @@
 #include "AudioWorker.h"
+#include "AudioFeatures.h"
 #include "FftProcessor.h"
 
 #include <QAudioBuffer>
@@ -231,6 +232,12 @@ void AudioWorker::playAt(int playlistIndex, const QUrl& url)
 {
     qInfo() << "AudioWorker::playAt:" << playlistIndex << url;
 
+    // If we're switching from preview-stream mode (CD ripper feeding
+    // the pipe), drop the streaming flag so any in-flight pushPreviewPcm
+    // becomes a no-op rather than writing into the pipe the decoder is
+    // about to take over.
+    m_previewStreamActive = false;
+
     // Clear sinkStarted FIRST so onSinkStateChanged sees this as an
     // intentional stop, not an unexpected one.
     m_sinkStarted = false;
@@ -281,6 +288,110 @@ void AudioWorker::enqueueAt(int playlistIndex, const QUrl& url)
     m_queue.append({url, playlistIndex});
 
     if (m_decoderDone) startNextInQueue();
+}
+
+
+void AudioWorker::startPreviewStream(qint64 totalDurationMs)
+{
+    Q_ASSERT(QThread::currentThread() == thread());
+
+    // Tear down any file-playback state cleanly first. Same dance as
+    // playAt() but minus the decoder kickoff.
+    m_sinkStarted = false;
+    if (m_decoder) m_decoder->stop();
+    if (m_sink)    m_sink->stop();
+    if (m_pipe)    m_pipe->clearAll();
+    m_segments.clear();
+    m_queue.clear();
+    m_currentSegmentIndex  = 0;
+    m_decodingSegmentIndex = -1;
+    m_decoderDone = true;          // no decoder running
+    m_sinkRestartPipeByte = 0;
+    m_durationMs = totalDurationMs;
+
+    // Synthetic single segment representing the streaming preview. The
+    // sink reads from the pipe; pushPreviewPcm() feeds the pipe.
+    // durationMs comes from the disc TOC ((leadOut - firstTrack)/75 × 1000),
+    // so the scrubber + duration label work the same as during a
+    // normal QAudioDecoder playback.
+    Segment s;
+    s.startByte     = 0;
+    s.endByte       = -1;
+    s.source        = QUrl(QStringLiteral("preview://cd-rip"));
+    s.playlistIndex = -1;
+    s.durationMs    = totalDurationMs;
+    m_segments.append(s);
+    m_currentSegmentIndex = 0;
+    m_decodingSegmentIndex = 0;
+
+    m_currentSource = s.source;
+    emit workerSourceChanged(s.source);
+    emit workerDurationChanged(totalDurationMs);
+    emit workerPositionChanged(0);
+
+    m_previewStreamActive = true;
+    startSinkIfNeeded();
+    // Treat as playing — even before bytes arrive the sink is "Active"
+    // waiting on the first read, and we want the SCANCERTO transport
+    // (and the main player's transport) to show ⏸ from the moment the
+    // rip kicks off rather than after the first PCM chunk lands.
+    // Always emit/restart even if m_playing was already true so the
+    // QML rebinds and the position timer ticks against the new
+    // segment.
+    m_playing = true;
+    emit workerPlayingChanged(true);
+    if (m_positionTimer) m_positionTimer->start();
+}
+
+
+void AudioWorker::pushPreviewPcm(QByteArray int16Bytes)
+{
+    if (!m_previewStreamActive || !m_pipe) return;
+    if (int16Bytes.isEmpty()) return;
+
+    // CDDA is interleaved int16 LE stereo @ 44.1 kHz. The sink's pipe
+    // format is interleaved float32 @ 44.1 kHz (same SR + channel
+    // count). Convert in place into a contiguous float32 buffer, then
+    // append to the pipe.
+    const int16_t* src =
+        reinterpret_cast<const int16_t*>(int16Bytes.constData());
+    const qsizetype sampleCount =
+        int16Bytes.size() / qsizetype(sizeof(int16_t));
+
+    QByteArray floatBytes;
+    floatBytes.resize(sampleCount * qsizetype(sizeof(float)));
+    float* dst = reinterpret_cast<float*>(floatBytes.data());
+
+    constexpr float kInv = 1.0f / 32768.0f;
+    for (qsizetype i = 0; i < sampleCount; ++i) {
+        dst[i] = float(src[i]) * kInv;
+    }
+
+    m_pipe->append(floatBytes);
+}
+
+
+void AudioWorker::stopPreviewStream()
+{
+    Q_ASSERT(QThread::currentThread() == thread());
+    if (!m_previewStreamActive) return;
+    m_previewStreamActive = false;
+    // Mirror stop() for the rest of the teardown — the next file
+    // playback path comes via playAt() in main.cpp.
+    m_sinkStarted = false;
+    if (m_sink) m_sink->stop();
+    if (m_pipe) m_pipe->clearAll();
+    m_segments.clear();
+    m_currentSegmentIndex  = 0;
+    m_decodingSegmentIndex = -1;
+    m_decoderDone = false;
+    m_sinkRestartPipeByte = 0;
+    if (m_playing) {
+        m_playing = false;
+        emit workerPlayingChanged(false);
+        if (m_positionTimer) m_positionTimer->stop();
+    }
+    emit workerPositionChanged(0);
 }
 
 
@@ -563,5 +674,8 @@ void AudioWorker::recreateSink()
 
 void AudioWorker::onSamplesServed(const char* data, qint64 bytes)
 {
-    if (m_fft) m_fft->pushPcm(data, bytes, m_fmt);
+    // Both consumers run on the audio thread (DirectConnection from
+    // PcmPipe). Their internal mutexes are short — a few μs.
+    if (m_fft)      m_fft     ->pushPcm(data, bytes, m_fmt);
+    if (m_features) m_features->pushPcm(data, bytes, m_fmt);
 }

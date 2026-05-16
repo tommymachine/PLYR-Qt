@@ -51,6 +51,7 @@
 #include <IOKit/storage/IOMedia.h>
 
 #include <cstddef>
+#include <string>
 #include <vector>
 
 namespace plyr::cd {
@@ -94,20 +95,46 @@ bool diskHasAudioTrack(DADiskRef disk) {
     return found;
 }
 
-void diskAppeared(DADiskRef disk, void* ctx) {
+std::string bsdNameOf(DADiskRef disk) {
+    const char* p = DADiskGetBSDName(disk);
+    return p ? std::string(p) : std::string();
+}
+
+} // namespace
+
+// State carried in the DA context: the claim set + the shield's
+// listeners. CFMutableSetRef sits in `claimed`; the shield owns the
+// listeners. One context per session avoids the
+// "context-as-CFMutableSet" overload from before, which left no room to
+// route disc events back into the shield instance.
+struct ShieldCtx {
+    CFMutableSetRef    claimed = nullptr;
+    CdShield::DiscListener* appeared    = nullptr;
+    CdShield::DiscListener* disappeared = nullptr;
+};
+
+namespace {
+
+void diskAppeared(DADiskRef disk, void* raw) {
+    auto* sc = static_cast<ShieldCtx*>(raw);
     if (!diskHasAudioTrack(disk)) return;  // data CDs: let Finder handle them
 
-    CFMutableSetRef claimed = static_cast<CFMutableSetRef>(ctx);
-    CFSetAddValue(claimed, disk);  // CFSet retains via kCFTypeSetCallBacks
+    CFSetAddValue(sc->claimed, disk);  // CFSet retains via kCFTypeSetCallBacks
     DADiskClaim(disk,
                 kDADiskClaimOptionDefault,
                 /*release cb*/ nullptr, /*release ctx*/ nullptr,
                 /*claim cb*/   nullptr, /*claim ctx*/   nullptr);
+    if (sc->appeared && *sc->appeared) {
+        (*sc->appeared)(bsdNameOf(disk));
+    }
 }
 
-void diskDisappeared(DADiskRef disk, void* ctx) {
-    CFMutableSetRef claimed = static_cast<CFMutableSetRef>(ctx);
-    CFSetRemoveValue(claimed, disk);  // CFSet releases the held ref
+void diskDisappeared(DADiskRef disk, void* raw) {
+    auto* sc = static_cast<ShieldCtx*>(raw);
+    CFSetRemoveValue(sc->claimed, disk);  // CFSet releases the held ref
+    if (sc->disappeared && *sc->disappeared) {
+        (*sc->disappeared)(bsdNameOf(disk));
+    }
 }
 
 } // namespace
@@ -129,6 +156,15 @@ void CdShield::start() {
         return;
     }
 
+    // ShieldCtx owns the claim set + pointers to the shield's listener
+    // members so the C callbacks can wake the Ripper without needing
+    // an extra back-pointer to the shield itself.
+    auto* ctx = new ShieldCtx{
+        claimed,
+        &appearedListener_,
+        &disappearedListener_,
+    };
+
     // Match every CD media at the DA layer, then filter to audio-bearing
     // discs in diskAppeared() via an IOKit child-walk. DA's "media kind"
     // is the IOKit class name; "IOCDMedia" covers every CD variant.
@@ -142,23 +178,23 @@ void CdShield::start() {
                          CFSTR(kIOCDMediaClass));
 
     DARegisterDiskAppearedCallback(session, match,
-                                   &diskAppeared, claimed);
+                                   &diskAppeared, ctx);
     DARegisterDiskDisappearedCallback(session, match,
-                                      &diskDisappeared, claimed);
+                                      &diskDisappeared, ctx);
     CFRelease(match);
 
     DASessionScheduleWithRunLoop(session, CFRunLoopGetMain(),
                                  kCFRunLoopCommonModes);
 
     session_ = session;   // owns +1
-    claimed_ = claimed;   // owns +1
+    claimed_ = ctx;       // owns the heap-allocated ShieldCtx + the CFSet
 }
 
 void CdShield::stop() {
     if (!session_) return;
 
-    DASessionRef    session = static_cast<DASessionRef>(session_);
-    CFMutableSetRef claimed = static_cast<CFMutableSetRef>(claimed_);
+    DASessionRef session = static_cast<DASessionRef>(session_);
+    auto*        ctx     = static_cast<ShieldCtx*>(claimed_);
 
     DASessionUnscheduleFromRunLoop(session, CFRunLoopGetMain(),
                                    kCFRunLoopCommonModes);
@@ -166,27 +202,49 @@ void CdShield::stop() {
     // Drop both callbacks. DAUnregisterCallback takes the function
     // pointer cast to void*, plus the same context we registered with.
     DAUnregisterCallback(session, reinterpret_cast<void*>(&diskAppeared),
-                         claimed);
+                         ctx);
     DAUnregisterCallback(session, reinterpret_cast<void*>(&diskDisappeared),
-                         claimed);
+                         ctx);
 
     // Unclaim every disc we currently hold. Snapshot the set's
     // contents into a vector first so the iteration order is stable
     // and we don't have to worry about DA mutating things mid-loop.
-    const CFIndex n = CFSetGetCount(claimed);
+    const CFIndex n = CFSetGetCount(ctx->claimed);
     if (n > 0) {
         std::vector<const void*> disks(static_cast<std::size_t>(n));
-        CFSetGetValues(claimed, disks.data());
+        CFSetGetValues(ctx->claimed, disks.data());
         for (const void* v : disks) {
             DADiskUnclaim(reinterpret_cast<DADiskRef>(const_cast<void*>(v)));
         }
     }
 
-    CFRelease(claimed);
+    CFRelease(ctx->claimed);
+    delete ctx;
     CFRelease(session);
 
     session_ = nullptr;
     claimed_ = nullptr;
+}
+
+void CdShield::setOnDiscAppeared(DiscListener listener) {
+    appearedListener_ = std::move(listener);
+    // Replay the current set so a disc already claimed at the time the
+    // listener is installed still wakes the Ripper. DA's own callback
+    // replay happens at register-time, which is before this listener
+    // exists — so we synthesize the replay manually.
+    if (!claimed_ || !appearedListener_) return;
+    auto* ctx = static_cast<ShieldCtx*>(claimed_);
+    const CFIndex n = CFSetGetCount(ctx->claimed);
+    if (n == 0) return;
+    std::vector<const void*> disks(static_cast<std::size_t>(n));
+    CFSetGetValues(ctx->claimed, disks.data());
+    for (const void* v : disks) {
+        appearedListener_(bsdNameOf(reinterpret_cast<DADiskRef>(const_cast<void*>(v))));
+    }
+}
+
+void CdShield::setOnDiscDisappeared(DiscListener listener) {
+    disappearedListener_ = std::move(listener);
 }
 
 } // namespace plyr::cd

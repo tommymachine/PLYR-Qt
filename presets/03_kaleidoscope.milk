@@ -1,0 +1,17 @@
+[preset00]
+// Layer 3b bundled preset — "Kaleidoscope". Uses per_frame_init to set
+// q1 = 0 once, then accumulates it in per_frame as a slow phase
+// counter. Per-vertex uses (rad, q1) to drive a radial zoom modulation
+// that pulses with mid_att (the band where most melodic content lives).
+fDecay=0.97
+cx=0.5
+cy=0.5
+per_frame_init_1=q1 = 0;
+per_frame_1=q1 = q1 + 0.01;
+per_frame_2=zoom = 1.005 + 0.005 * mid_att;
+per_frame_3=rot  = 0.005 * sin(q1);
+per_frame_4=wave_r = 0.4 + 0.4 * sin(q1 * 0.7);
+per_frame_5=wave_g = 0.4 + 0.4 * sin(q1 * 0.7 + 2);
+per_frame_6=wave_b = 0.4 + 0.4 * sin(q1 * 0.7 + 4);
+per_vertex_1=rad2 = sqrt((x - cx)*(x - cx) + (y - cy)*(y - cy));
+per_vertex_2=zoom = 1.0 + 0.02 * sin(rad2 * 12 + q1) * bass_att;

@@ -42,3 +42,6 @@ compile_commands.json
 # Env
 .env
 *.log
+
+# Claude Code session state
+.claude/

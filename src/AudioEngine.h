@@ -18,6 +18,7 @@
 
 #include "eq_engine.h"
 
+#include <QByteArray>
 #include <QMutex>
 #include <QObject>
 #include <QUrl>
@@ -25,6 +26,7 @@
 
 class AudioWorker;
 class FftProcessor;
+class AudioFeatures;
 class QThread;
 
 class AudioEngine : public QObject {
@@ -43,6 +45,7 @@ public:
     // Called before anything else ticks. Worker hasn't started its thread
     // yet, so a plain pointer store is safe.
     void setFftProcessor(FftProcessor* fft);
+    void setAudioFeatures(AudioFeatures* af);
 
     // EQ handle. Returns nullptr until AudioWorker::init() has created it
     // (signalled via engineReady below). EqController waits on that
@@ -70,6 +73,14 @@ public:
     Q_INVOKABLE void playAt   (int playlistIndex, const QUrl& url);
     Q_INVOKABLE void enqueueAt(int playlistIndex, const QUrl& url);
 
+    // Live-PCM preview path for the CD ripper. See AudioWorker.h for
+    // the full contract. pushPreviewPcm() crosses threads via a queued
+    // signal — the QByteArray is implicitly shared so the bytes don't
+    // get copied on the hop.
+    Q_INVOKABLE void startPreviewStream(qint64 totalDurationMs = 0);
+    Q_INVOKABLE void pushPreviewPcm(const QByteArray& int16Bytes);
+    Q_INVOKABLE void stopPreviewStream();
+
 signals:
     // QML-facing change signals.
     void sourceChanged();
@@ -94,6 +105,9 @@ signals:
     void requestSetVolume(float v);
     void requestPlayAt(int playlistIndex, QUrl url);
     void requestEnqueueAt(int playlistIndex, QUrl url);
+    void requestStartPreviewStream(qint64 totalDurationMs);
+    void requestPushPreviewPcm(QByteArray int16Bytes);
+    void requestStopPreviewStream();
 
 private slots:
     // --- Receive state changes from the worker (auto-queued to main).

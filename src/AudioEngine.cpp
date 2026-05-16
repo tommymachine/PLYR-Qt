@@ -41,6 +41,12 @@ AudioEngine::AudioEngine(QObject* parent)
     connect(this, &AudioEngine::requestSetVolume, m_worker, &AudioWorker::setVolume);
     connect(this, &AudioEngine::requestPlayAt,    m_worker, &AudioWorker::playAt);
     connect(this, &AudioEngine::requestEnqueueAt, m_worker, &AudioWorker::enqueueAt);
+    connect(this, &AudioEngine::requestStartPreviewStream,
+            m_worker, &AudioWorker::startPreviewStream);
+    connect(this, &AudioEngine::requestPushPreviewPcm,
+            m_worker, &AudioWorker::pushPreviewPcm);
+    connect(this, &AudioEngine::requestStopPreviewStream,
+            m_worker, &AudioWorker::stopPreviewStream);
 
     m_thread->start();
 }
@@ -74,6 +80,14 @@ void AudioEngine::setFftProcessor(FftProcessor* fft)
 }
 
 
+void AudioEngine::setAudioFeatures(AudioFeatures* af)
+{
+    // Same lifetime story as setFftProcessor. Both must be called before
+    // app.exec() spins the event loops, which is what main.cpp does.
+    if (m_worker) m_worker->setAudioFeatures(af);
+}
+
+
 // ---- Property reads ------------------------------------------------------
 
 QUrl AudioEngine::source() const
@@ -104,6 +118,10 @@ void AudioEngine::stop()                                      { emit requestStop
 void AudioEngine::seek(qint64 ms)                             { emit requestSeek(ms); }
 void AudioEngine::playAt(int idx, const QUrl& url)            { emit requestPlayAt(idx, url); }
 void AudioEngine::enqueueAt(int idx, const QUrl& url)         { emit requestEnqueueAt(idx, url); }
+
+void AudioEngine::startPreviewStream(qint64 totalDurationMs)  { emit requestStartPreviewStream(totalDurationMs); }
+void AudioEngine::pushPreviewPcm(const QByteArray& bytes)     { emit requestPushPreviewPcm(bytes); }
+void AudioEngine::stopPreviewStream()                         { emit requestStopPreviewStream(); }
 
 
 // ---- Worker → Engine slots ----------------------------------------------

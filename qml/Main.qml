@@ -132,12 +132,195 @@ ApplicationWindow {
         saveRecents: playlist.recentFolders
     }
 
-    // Open the rip view. Re-queries volumes per open so newly mounted /
-    // ejected drives are accurate inside the save picker.
-    function openRipView() {
+    // Open the rip view, mediating through the batch / resume UX:
+    //   no resumable batches            → straight to a fresh session
+    //   exactly one resumable batch     → "Resume X?" dialog
+    //   ≥ 2 resumable batches           → batch picker
+    function openRipView(resumeBatchId) {
         ripView.saveVolumes = systemPaths.mountedVolumes()
-        ripper.startSession()
+        ripper.startSession(resumeBatchId || "")
         ripView.open()
+    }
+
+    function startRipFlow() {
+        ripper.refreshResumableBatches()
+        const batches = ripper.resumableBatches
+        if (batches.length === 0) {
+            root.openRipView()
+        } else if (batches.length === 1) {
+            resumePrompt.batch = batches[0]
+            resumePrompt.open()
+        } else {
+            batchPicker.open()
+        }
+    }
+
+    // "Resume <album>?" — single-batch shortcut.
+    Dialog {
+        id: resumePrompt
+        modal: true
+        x: (root.width  - width)  / 2
+        y: (root.height - height) / 2
+        title: "Resume previous rip?"
+        standardButtons: Dialog.NoButton
+
+        property var batch: ({})
+
+        background: Rectangle {
+            color: Qt.rgba(0.08, 0.08, 0.10, 0.98)
+            border.color: root.subtleLine
+            border.width: 1
+            radius: 10
+        }
+
+        contentItem: ColumnLayout {
+            spacing: 14
+            Text {
+                Layout.preferredWidth: 400
+                Layout.fillWidth: true
+                wrapMode: Text.WordWrap
+                color: "white"
+                font.pixelSize: 12
+                text: {
+                    const b = resumePrompt.batch || {}
+                    const remaining = (b.totalDiscs || 0) - (b.doneCount || 0)
+                    return "You started ripping \"" + (b.albumTitle || "")
+                        + "\" earlier — " + remaining + " of " + (b.totalDiscs || 0)
+                        + " disc" + ((b.totalDiscs || 0) === 1 ? "" : "s") + " left."
+                }
+            }
+            RowLayout {
+                Layout.fillWidth: true
+                spacing: 8
+                Button {
+                    text: "Delete batch"
+                    onClicked: {
+                        ripper.deleteResumableBatch(resumePrompt.batch.id)
+                        resumePrompt.close()
+                    }
+                }
+                Item { Layout.fillWidth: true }
+                Button {
+                    text: "Start new"
+                    onClicked: {
+                        resumePrompt.close()
+                        root.openRipView()
+                    }
+                }
+                Button {
+                    text: "Resume"
+                    highlighted: true
+                    onClicked: {
+                        const id = resumePrompt.batch.id
+                        resumePrompt.close()
+                        root.openRipView(id)
+                    }
+                }
+            }
+        }
+    }
+
+    // Multi-batch resume picker.
+    Dialog {
+        id: batchPicker
+        modal: true
+        x: (root.width  - width)  / 2
+        y: (root.height - height) / 2
+        width: 480
+        title: "Resume which rip?"
+        standardButtons: Dialog.NoButton
+
+        background: Rectangle {
+            color: Qt.rgba(0.08, 0.08, 0.10, 0.98)
+            border.color: root.subtleLine
+            border.width: 1
+            radius: 10
+        }
+
+        contentItem: ColumnLayout {
+            spacing: 8
+            ListView {
+                Layout.fillWidth: true
+                Layout.preferredHeight: 240
+                clip: true
+                model: ripper.resumableBatches
+                spacing: 0
+
+                delegate: Rectangle {
+                    width: ListView.view.width
+                    height: 48
+                    color: rowMouse.containsMouse
+                           ? Qt.rgba(1, 1, 1, 0.06)
+                           : "transparent"
+                    radius: 6
+
+                    MouseArea {
+                        id: rowMouse
+                        anchors.fill: parent
+                        hoverEnabled: true
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: {
+                            batchPicker.close()
+                            root.openRipView(modelData.id)
+                        }
+                    }
+
+                    RowLayout {
+                        anchors.fill: parent
+                        anchors.leftMargin: 8
+                        anchors.rightMargin: 8
+                        spacing: 8
+
+                        ColumnLayout {
+                            Layout.fillWidth: true
+                            spacing: 2
+                            Text {
+                                Layout.fillWidth: true
+                                text: modelData.albumTitle
+                                color: "white"
+                                font.pixelSize: 12
+                                font.bold: true
+                                elide: Text.ElideRight
+                            }
+                            Text {
+                                Layout.fillWidth: true
+                                text: modelData.artist + "  ·  "
+                                    + modelData.doneCount + "/"
+                                    + modelData.totalDiscs + " discs done"
+                                color: root.muted
+                                font.pixelSize: 10
+                                elide: Text.ElideRight
+                            }
+                        }
+                        Button {
+                            text: "Delete"
+                            flat: true
+                            onClicked: {
+                                ripper.deleteResumableBatch(modelData.id)
+                                // List is bound to ripper.resumableBatches and
+                                // refreshes automatically.
+                            }
+                        }
+                    }
+                }
+            }
+            RowLayout {
+                Layout.fillWidth: true
+                spacing: 8
+                Item { Layout.fillWidth: true }
+                Button {
+                    text: "Start a new rip"
+                    onClicked: {
+                        batchPicker.close()
+                        root.openRipView()
+                    }
+                }
+                Button {
+                    text: "Cancel"
+                    onClicked: batchPicker.close()
+                }
+            }
+        }
     }
 
     function togglePlayPause() {
@@ -146,21 +329,49 @@ ApplicationWindow {
         else audio.play()
     }
 
-    // Space / Return / Enter = play-pause toggle, the universal music-app
-    // shortcut. ApplicationShortcut context so it fires regardless of
-    // which item currently holds keyboard focus (the default
-    // WindowShortcut needs an item in the window to have focus, which
-    // isn't guaranteed at startup). Gated while any popup is open so
-    // those keys remain free for the popup itself.
+    // Transport key shortcuts. ApplicationShortcut context so they fire
+    // regardless of which item currently holds keyboard focus (the
+    // default WindowShortcut needs an item in the window to have focus,
+    // which isn't guaranteed at startup). All gated while any popup is
+    // open so the keys remain free for the popup itself (Enter to
+    // confirm a folder pick, arrow keys to navigate its list, etc.).
+    readonly property bool _transportKeysActive:
+        !folderDialog.opened && !ripView.opened && !eqPopup.opened
+
+    // Space / Return / Enter = play-pause toggle.
     Shortcut {
         sequences: ["Space", "Return", "Enter"]
         context: Qt.ApplicationShortcut
-        enabled: !folderDialog.opened && !ripView.opened && !eqPopup.opened
-        onActivated: {
-            console.log("[shortcut] play/pause fired; hasCurrent="
-                        + playlist.hasCurrent + " playing=" + root.isPlaying)
-            root.togglePlayPause()
-        }
+        enabled: root._transportKeysActive
+        onActivated: root.togglePlayPause()
+    }
+
+    // ← / → = previous / next track.
+    Shortcut {
+        sequence: "Left"
+        context: Qt.ApplicationShortcut
+        enabled: root._transportKeysActive && playlist.hasCurrent
+        onActivated: playlist.previous()
+    }
+    Shortcut {
+        sequence: "Right"
+        context: Qt.ApplicationShortcut
+        enabled: root._transportKeysActive && playlist.hasCurrent
+        onActivated: playlist.next()
+    }
+
+    // Shift+← / Shift+→ = seek 5 s backward / forward, clamped.
+    Shortcut {
+        sequence: "Shift+Left"
+        context: Qt.ApplicationShortcut
+        enabled: root._transportKeysActive && playlist.hasCurrent
+        onActivated: audio.seek(Math.max(0, audio.position - 5000))
+    }
+    Shortcut {
+        sequence: "Shift+Right"
+        context: Qt.ApplicationShortcut
+        enabled: root._transportKeysActive && playlist.hasCurrent
+        onActivated: audio.seek(Math.min(audio.duration, audio.position + 5000))
     }
 
     // EQ overlay. Modal popup with backdrop dismiss; the panel itself is
@@ -437,7 +648,7 @@ ApplicationWindow {
                     Layout.preferredWidth: height
                     padding: 0
                     background: Rectangle { color: "transparent" }
-                    onClicked: root.openRipView()
+                    onClicked: root.startRipFlow()
                     ToolTip.text: "Rip a CD"
                     ToolTip.visible: hovered
                     ToolTip.delay: 600
@@ -747,6 +958,23 @@ ApplicationWindow {
                     repeat:   true
                     onTriggered: fft.refresh()
                 }
+
+                // Drives the higher-level AudioFeatures pipeline at the
+                // same 60 Hz cadence: per-band envelope followers,
+                // centroid, flux, onset detection, phase correlation, and
+                // the 512×2 spectrum/waveform texture rows. Independent
+                // from fft.refresh() — both consume the same PCM stream
+                // but maintain their own ring + smoothing state.
+                Timer {
+                    interval: 16
+                    running:  true
+                    repeat:   true
+                    onTriggered: audioFeatures.refresh()
+                }
+
+                // Layer-0 debug HUD is at qml/AudioFeaturesHud.qml; drop
+                // an `AudioFeaturesHud { ... }` here during dev to verify
+                // the DSP. See that file's header for the invocation.
             }
         }
 

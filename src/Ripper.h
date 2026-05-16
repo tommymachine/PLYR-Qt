@@ -1,73 +1,53 @@
 // Ripper — QObject orchestrating the GUI-driven CD-rip flow.
 //
-// Wraps the runRip pipeline (TOC → MusicBrainz → drive offset → read with
-// retry/zero-fill → offset-corrected encode → AR/CTDB verify → save) behind
-// a state machine that QML can bind to. The actual disc I/O and encoding
-// runs on a worker thread; this class lives on the GUI thread and is the
-// single source of truth for everything the rip view displays.
+// Owns a QThread + RipWorker; the worker runs the rip pipeline
+// (TOC → MusicBrainz → drive offset → read with retry/zero-fill →
+//  offset-corrected encode → AR/CTDB verify → save-at-end). The Ripper
+// itself lives on the GUI thread and is the single source of truth for
+// every property the rip view binds to.
 //
-// Stub note: phase implementations are stand-ins for now. They emit canned
-// progress so the QML rip view can be built and iterated against. The real
-// pipeline gets ported into RipWorker (a QObject moved onto a QThread) once
-// the visual side is settled.
+// CdShield is also passed in: the Ripper registers a disc-appeared
+// listener so insertion of a CD wakes the worker (no polling).
 #pragma once
 
 #include <QObject>
 #include <QString>
-#include <QTimer>
 #include <QUrl>
 #include <QVariantList>
+#include <QVariantMap>
 #include <qqmlregistration.h>
 
+#include "RipBatchStore.h"
+
+class QThread;
+
 namespace plyr::cd {
+
+class CdShield;
+class RipWorker;
 
 class Ripper : public QObject {
     Q_OBJECT
     QML_ELEMENT
+    QML_UNCREATABLE("Instantiated in C++ and exposed as a context property")
 
 public:
-    // State machine. The QML rip view picks its layout off this enum; one
-    // value, one screen-mode. Transitions are linear except Cancelling /
-    // Failed, which can be entered from any active phase.
     enum class State {
-        // No rip session is open. Header pill is hidden, rip view closed.
         Idle,
-        // Rip view is open. Waiting for a disc to be inserted. In a batch
-        // context this is the "Insert disc N of M" screen.
         WaitingForDisc,
-        // Disc claimed, reading TOC + computing disc IDs + MusicBrainz
-        // lookup + drive-offset DB lookup. Fast (~1-3s on a warm cache).
         Identifying,
-        // Sectors being read from the disc into the in-memory PCM buffer.
-        // The long phase: ~8-15 min for a full disc on a SuperDrive.
         Reading,
-        // Per-track FLAC encoding from the PCM buffer. <30s for a full
-        // disc; uses the same CD canvas as Reading, but the read fill
-        // freezes and tracks light up briefly as they're written.
         Encoding,
-        // AccurateRip + CTDB lookups + per-track checksum match. Each
-        // track shows ✓ / ⚠ / — as results come in.
         Verifying,
-        // Rip is complete in a temp dir. Waiting for the user to pick a
-        // destination folder via the save dialog. The save button is the
-        // only thing the user can interact with from the rip view now.
         SavePending,
-        // The temp dir is being moved into the chosen destination. Brief.
         Saving,
-        // Single-disc done, or final disc of a batch done. Rip view shows
-        // the summary and offers to close. The just-saved folder has
-        // already been opened in the playlist and playback started.
         Done,
-        // User pressed stop. Worker thread is winding down; the in-progress
-        // disc's PCM buffer is discarded. The current disc reverts to
-        // "pending" in batch state, if a batch is active.
         Cancelling,
-        // Unrecoverable error. errorMessage() carries the diagnostic.
         Failed,
     };
     Q_ENUM(State)
 
-    explicit Ripper(QObject* parent = nullptr);
+    explicit Ripper(CdShield* shield = nullptr, QObject* parent = nullptr);
     ~Ripper() override;
 
     // ---- State ------------------------------------------------------
@@ -93,12 +73,6 @@ public:
     QString accurateRipId() const        { return m_accurateRipId; }
 
     // ---- Tracks ----------------------------------------------------
-    // Each entry: { number, title, durationSec, startFraction, endFraction,
-    //               status } where startFraction/endFraction are 0..1 over
-    //               the audio body (used by the CD canvas to draw track
-    //               boundary radii) and status is one of "pending",
-    //               "reading", "read", "encoded", "ok", "warn", "fail",
-    //               "unknown" (the latter four are verify-time states).
     QVariantList tracks() const          { return m_tracks; }
 
     // ---- Read / Encode / Verify progress (0..1) --------------------
@@ -106,20 +80,22 @@ public:
     double encodeProgress() const        { return m_encodeProgress; }
     double verifyProgress() const        { return m_verifyProgress; }
 
-    // Live read-stage telemetry (Reading state only).
     int    currentLba() const            { return m_currentLba; }
     double currentSpeedSecPerSec() const { return m_currentSpeedSecPerSec; }
     double currentMultiplier() const     { return m_currentMultiplier; }
     int    etaSec() const                { return m_etaSec; }
     int    currentTrackNumber() const    { return m_currentTrackNumber; }
-
-    // Verify summary line shown after verify completes. e.g.
-    // "16/16 ACCURATE  ·  AR offset 0  ·  CTDB confidence 12".
     QString verifySummary() const        { return m_verifySummary; }
 
-    // Zero-fill marker positions for the CD canvas, each entry:
-    // { fraction (0..1 over audio body), sectors }.
     QVariantList zeroFilledRanges() const { return m_zeroFilledRanges; }
+
+    // The path the playlist is currently rooted at for THIS rip's
+    // streaming-preview / post-save playback. Empty when nothing from
+    // this disc is being played (e.g. WaitingForDisc, or mid-rip before
+    // track 1 lands). The QML track list uses it to decide whether
+    // `playlist.currentTrackNumber` refers to a track in this view's
+    // list, vs an unrelated album playing underneath.
+    QString currentDiscPlaybackPath() const { return m_currentDiscPlaybackPath; }
 
     // ---- Batch context --------------------------------------------
     bool    inBatch() const              { return m_inBatch; }
@@ -127,10 +103,9 @@ public:
     int     batchDoneCount() const       { return m_batchDoneCount; }
     int     batchTotalCount() const      { return m_batchTotalCount; }
     int     batchExpectedDisc() const    { return m_batchExpectedDisc; }
+    QString batchParentFolder() const    { return m_batch.parentFolder; }
     QVariantList resumableBatches() const { return m_resumableBatches; }
 
-    // ---- Q_PROPERTY block (declared after accessors so the macros can
-    //      reference them without forward-declaration noise). ---------
     Q_PROPERTY(State    state           READ state           NOTIFY stateChanged)
     Q_PROPERTY(QString  errorMessage    READ errorMessage    NOTIFY stateChanged)
 
@@ -163,51 +138,55 @@ public:
     Q_PROPERTY(QString  verifySummary   READ verifySummary   NOTIFY progressChanged)
 
     Q_PROPERTY(QVariantList zeroFilledRanges READ zeroFilledRanges NOTIFY zeroFilledRangesChanged)
+    Q_PROPERTY(QString currentDiscPlaybackPath READ currentDiscPlaybackPath NOTIFY currentDiscPlaybackPathChanged)
 
     Q_PROPERTY(bool     inBatch         READ inBatch         NOTIFY batchChanged)
     Q_PROPERTY(QString  batchAlbumTitle READ batchAlbumTitle NOTIFY batchChanged)
     Q_PROPERTY(int      batchDoneCount  READ batchDoneCount  NOTIFY batchChanged)
     Q_PROPERTY(int      batchTotalCount READ batchTotalCount NOTIFY batchChanged)
     Q_PROPERTY(int      batchExpectedDisc READ batchExpectedDisc NOTIFY batchChanged)
+    Q_PROPERTY(QString  batchParentFolder READ batchParentFolder NOTIFY batchChanged)
     Q_PROPERTY(QVariantList resumableBatches READ resumableBatches NOTIFY resumableBatchesChanged)
 
 public slots:
-    // Open the rip view. If a disc is in the drive, kicks off identification
-    // immediately; otherwise sits in WaitingForDisc. If `resumeBatchId` is
-    // non-empty, the named batch is the active context.
+    // Open the rip view. If a disc is in the drive, identification kicks
+    // off immediately. If `resumeBatchId` is non-empty, the named batch
+    // becomes the active context.
     void startSession(const QString& resumeBatchId = {});
 
-    // Close the rip view. Any in-progress disc rip is cancelled; the batch
-    // state (if active) is preserved on disk as "Resume later".
+    // Close the rip view. Any in-progress disc rip is cancelled but the
+    // batch state stays resumable.
     void endSession();
 
-    // Stop the current disc rip but keep the batch resumable. Used by the
-    // top-left X and the bottom-center "Not now". `deleteBatch=true` also
-    // removes the batch state file (already-saved disc folders untouched).
+    // Stop the current disc rip, keep the batch resumable (unless
+    // `deleteBatch=true`, which also drops the JSON file).
     void stopRip(bool deleteBatch = false);
 
     // After SavePending, commit the temp dir into `parentFolder`. The
-    // subfolder name is auto-generated from MB; pass an explicit name to
-    // override (empty = use auto). Triggers playback of the saved folder.
+    // subfolder name is auto-generated from MB (or `folderNameOverride`
+    // if provided). Triggers playback of the saved folder.
     void saveTo(const QUrl& parentFolder, const QString& folderNameOverride = {});
 
-    // Eject the inserted disc — usable from the WaitingForDisc state when a
-    // wrong disc is in the drive (e.g. user inserted disc 5 of the batch
-    // but we expect disc 3).
+    // The user dismissed the save picker and confirmed "Delete rip".
+    // Drops the staged temp dir and ends the session.
+    void discardStagedRip();
+
+    // Eject from the WaitingForDisc state when a wrong disc is inserted.
     void ejectDisc();
 
-    // Delete a resumable batch by id without entering it. Used from the
-    // batch picker. Already-saved disc folders are not touched.
+    // Mark the disc the batch is currently expecting as `skipped` and
+    // bump the expected disc to the next pending one. Persists to the
+    // batch JSON so the skip survives restarts. Used when the user
+    // doesn't own a particular disc in the box set, or wants to skip
+    // it and come back later — folder memory (parent_folder) persists.
+    void skipCurrentDisc();
+
+    // Drop a resumable batch by id from the resume picker.
     void deleteResumableBatch(const QString& batchId);
 
-    // ---- Stub-only: demo stage stepping --------------------------
-    // Used by the design-review UI to tab through every visible phase
-    // without waiting on the stub timer. Will be removed when the real
-    // RipWorker lands.
-    Q_INVOKABLE void demoStep(int delta);
-    Q_INVOKABLE void demoToggleAutoAdvance();
-    Q_INVOKABLE int  demoStepIndex() const { return m_demoStep; }
-    Q_INVOKABLE int  demoStepCount() const;
+    // Refresh `resumableBatches` from disk. Called by QML before
+    // showing the resume picker so the property is always current.
+    void refreshResumableBatches();
 
 signals:
     void stateChanged();
@@ -217,22 +196,76 @@ signals:
     void zeroFilledRangesChanged();
     void batchChanged();
     void resumableBatchesChanged();
+    void currentDiscPlaybackPathChanged();
 
-    // One-shot notifications routed to the QML side. The rip view turns
-    // these into toasts / inline messages.
     void warning(const QString& message);
-    // Fired when SavePending → Saving → Done completes and the just-saved
-    // folder is ready to be opened in the playlist. The Main.qml wiring
-    // calls playlist.openFolder(savedPath) + setCurrentIndex(0).
-    void discSaved(const QString& savedPath);
+
+    // Per-track-encoded hook — main.cpp uses it to add the encoded FLAC
+    // to the playlist so the user can later rewind to that track. The
+    // ACTUAL playback path during rip is the streaming-preview signals
+    // below (raw PCM straight off the drive); this signal is just for
+    // playlist housekeeping.
+    void discTrackReady(const QString& tempDir,
+                        const QString& flacPath,
+                        int trackNumber);
+
+    // Live raw-PCM preview signals. These get wired to the AudioEngine
+    // streaming slots in main.cpp; the user hears CDDA bytes within
+    // ~2 s of insertion — drive spin-up + first 27-sector read.
+    void previewStreamStart(qint64 totalDurationMs);
+    void previewPcm(QByteArray int16Bytes);
+    void previewStreamStop();
+
+    // Disc moved into its final home. `fromTempDir` is the temp parent
+    // streaming-preview was rooted at; `finalPath` is the destination
+    // folder. main.cpp uses fromTempDir to know whether the playlist
+    // can be remapped (preserving playback position) instead of cold-
+    // opened.
+    void discSaved(const QString& fromTempDir,
+                   const QString& finalPath);
+
+private slots:
+    // Receivers for RipWorker signals. Run on the GUI thread via queued
+    // connections; update state + re-emit to QML.
+    void onDiscIdentified(QVariantMap info);
+    void onMbResolved(QVariantMap match);
+    void onMbUnavailable();
+    void onReadStarted();
+    void onReadProgress(int currentLba, double secPerSec, double multiplier,
+                        int etaSec, int currentTrackNumber, double readFraction);
+    void onZeroFilled(QVariantMap range);
+    void onEncodingStarted();
+    void onEncodedTrack(int trackNumber, QString flacPath);
+    void onEncodingComplete();
+    void onVerifyingStarted();
+    void onVerifyTrackResult(int trackNumber, QString status);
+    void onVerifyComplete(QString summary);
+    void onReadyToSave(QString tempDir, QString suggestedFolderName);
+    void onWorkerDiscSaved(QString fromTempDir, QString finalPath);
+    void onRipCancelled();
+    void onFailed(QString message);
 
 private:
-    // ---- Stub pipeline: walks through every state on a QTimer, emitting
-    //      progress so the QML can be built and iterated. The real
-    //      pipeline lands in RipWorker once the visual side is settled.
-    void stubKickoff();
-    void stubAdvance();
     void setState(State s);
+    void setTrackStatus(int oneBased, const QString& status);
+    void resetDiscState();
+    void onCdShieldDiscAppeared(const std::string& bsdName);
+    void onCdShieldDiscDisappeared(const std::string& bsdName);
+
+    // Worker / thread machinery.
+    QThread*   m_thread = nullptr;
+    RipWorker* m_worker = nullptr;
+    CdShield*  m_shield = nullptr;
+
+    // Active rip context — populated as discIdentified / mbResolved land.
+    QString    m_currentBsdName;            // disc the worker is on
+    QString    m_currentTempDir;            // populated by encodedTrack/readyToSave
+    QString    m_suggestedFolderName;       // populated by readyToSave
+    QString    m_currentReleaseGroupId;     // for batch lookup at save time
+    QString    m_currentDiscPlaybackPath;   // playlist's rip-folder root
+
+    // Batch context — persisted via RipBatchStore.
+    RipBatch m_batch;       // empty when m_inBatch == false
 
     // Backing state.
     State   m_state               = State::Idle;
@@ -268,18 +301,11 @@ private:
     QVariantList m_zeroFilledRanges;
 
     bool    m_inBatch             = false;
-    QString m_batchId;
     QString m_batchAlbumTitle;
     int     m_batchDoneCount      = 0;
     int     m_batchTotalCount     = 1;
     int     m_batchExpectedDisc   = 1;
     QVariantList m_resumableBatches;
-
-    // Stub-pipeline timer state. Removed when the real RipWorker lands.
-    QTimer* m_stubTimer           = nullptr;
-    int     m_stubTick            = 0;
-    int     m_demoStep            = 0;
-    void    applyDemoStep(int idx);
 };
 
 } // namespace plyr::cd

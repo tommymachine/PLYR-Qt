@@ -12,6 +12,13 @@ single codebase.
 - **FLAC metadata**: in-house VORBIS_COMMENT / STREAMINFO parser (port of the
   Swift original)
 - **FFT**: KissFFT (permissive license)
+- **MilkDrop preset runtime**: projectm-eval (MIT) — a clean-room
+  reimplementation of NullSoft's NS-EEL2 expression compiler. Used by
+  Layer 3b's `MilkdropRuntime` / `MilkdropView` to evaluate per-frame /
+  per-vertex preset scripts. Vendored at `third_party/projectm-eval/`,
+  LICENSE.md retained alongside the source. Note: this is the MIT
+  expression-only library — we deliberately do NOT vendor `projectm`
+  itself (the surrounding LGPL renderer); our renderer is original.
 - **Visualizer**: Qt RHI — shaders authored in GLSL, baked to `.qsb`,
   rendered via `QQuickItem` + `QSGMaterialShader`. Qt translates at runtime
   to Metal (Apple), Vulkan (Android/Linux/Windows), or D3D12 (Windows).

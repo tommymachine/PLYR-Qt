@@ -28,6 +28,9 @@
 
 #pragma once
 
+#include <functional>
+#include <string>
+
 #if defined(__APPLE__)
   #include <TargetConditionals.h>
   #if !TARGET_OS_IPHONE
@@ -41,6 +44,17 @@ namespace plyr::cd {
 
 class CdShield {
 public:
+    // Listener invoked when an audio-bearing CD appears or disappears in
+    // any drive. Fires on the main run loop. `bsdName` is the BSD device
+    // identifier without the "/dev/" prefix (e.g. "disk5") — the same
+    // string CdDevice::open() expects. Set to {} to clear.
+    //
+    // The shield owns its DA claim across the listener's lifetime; the
+    // listener is purely informational — it does NOT need to manage
+    // claims or open the device. CdDevice::open() reads the raw character
+    // device independently of DA claim state.
+    using DiscListener = std::function<void(const std::string& bsdName)>;
+
     CdShield() = default;
     ~CdShield();
 
@@ -51,18 +65,30 @@ public:
     void stop();
     bool active() const { return session_ != nullptr; }
 
+    // Set the appeared / disappeared callbacks. If a disc is already
+    // present when `setOnDiscAppeared` is called, the appeared callback
+    // fires synchronously with the current disc — so the Ripper doesn't
+    // miss a disc that was already in the drive when its session opened.
+    void setOnDiscAppeared(DiscListener listener);
+    void setOnDiscDisappeared(DiscListener listener);
+
 private:
     void* session_ = nullptr;   // DASessionRef
-    void* claimed_ = nullptr;   // CFMutableSetRef of DADiskRef
+    void* claimed_ = nullptr;   // heap-allocated ShieldCtx (owns CFSet)
+    DiscListener appearedListener_;
+    DiscListener disappearedListener_;
 };
 
 #else  // no-op on iOS / non-Apple
 
 class CdShield {
 public:
+    using DiscListener = std::function<void(const std::string&)>;
     void start() {}
     void stop()  {}
     bool active() const { return false; }
+    void setOnDiscAppeared(DiscListener)    {}
+    void setOnDiscDisappeared(DiscListener) {}
 };
 
 #endif

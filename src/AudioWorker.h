@@ -37,6 +37,7 @@
 #include <memory>
 
 class FftProcessor;
+class AudioFeatures;
 
 class AudioWorker : public QObject {
     Q_OBJECT
@@ -50,6 +51,12 @@ public:
     // safe (internal QMutex), so our DirectConnection emit from PcmPipe
     // delivering on the audio thread is fine.
     void setFftProcessor(FftProcessor* fft) { m_fft = fft; }
+
+    // Same lifetime + threading contract: AudioFeatures lives on the
+    // main thread but its pushPcm() has an internal QMutex, so the
+    // DirectConnection from PcmPipe delivering on the audio thread is
+    // safe. Stored pointer is read by onSamplesServed only.
+    void setAudioFeatures(AudioFeatures* af) { m_features = af; }
 
     // Thread-safe read of the EQ handle. Returns the pointer stored by
     // init() after the engine is created, or nullptr before that.
@@ -75,6 +82,30 @@ public slots:
     void setVolume(float v);
     void playAt(int playlistIndex, const QUrl& url);
     void enqueueAt(int playlistIndex, const QUrl& url);
+
+    // Live-PCM preview path. Used by the CD ripper so the user can hear
+    // disc N's audio sub-2-seconds after the rip starts, while the disc
+    // is still being read. Bypasses the QAudioDecoder entirely — raw
+    // CDDA bytes get converted int16→float32 and pushed into the same
+    // PcmPipe the QAudioSink already pulls from.
+    //
+    //   startPreviewStream(totalDurationMs) — stop decoder + sink +
+    //   clear pipe, then restart the sink in pull-from-pipe mode. Idle
+    //   until pcm arrives. `totalDurationMs` is the disc's full audio
+    //   duration (from TOC; (leadOut - firstTrack) / 75 seconds × 1000);
+    //   used to populate the synthetic segment's durationMs so the
+    //   scrubber + duration label work the same as during file
+    //   playback.
+    //
+    //   pushPreviewPcm(bytes) — append `bytes` (interleaved int16 LE
+    //   stereo @ 44.1 kHz) to the pipe, converted to float32 on the
+    //   way in. The sink pulls + plays at its own pace.
+    //
+    //   stopPreviewStream() — drain + stop the sink; the next playAt()
+    //   re-uses the decoder path normally.
+    void startPreviewStream(qint64 totalDurationMs = 0);
+    void pushPreviewPcm(QByteArray int16Bytes);
+    void stopPreviewStream();
 
 signals:
     // State-change notifications. Auto-queued to AudioEngine on main.
@@ -130,6 +161,7 @@ private:
     EqEngine*                       m_eq = nullptr;
     std::atomic<EqEngine*>          m_eqAtom{nullptr};    // for cross-thread read
     FftProcessor*                   m_fft = nullptr;
+    AudioFeatures*                  m_features = nullptr;
 
     QUrl                            m_currentSource;
     qint64                          m_durationMs = 0;
@@ -143,4 +175,10 @@ private:
     int                             m_currentSegmentIndex = 0;
     int                             m_decodingSegmentIndex = -1;
     QVector<QPair<QUrl, int>>       m_queue;
+
+    // Set while a streaming-PCM preview is the audio source. Lets
+    // pushPreviewPcm() know it's allowed to feed the pipe, and lets the
+    // sink-state handler skip its "unexpected stop → recreate" branch
+    // when a file-playback transition tears things down deliberately.
+    bool                            m_previewStreamActive = false;
 };

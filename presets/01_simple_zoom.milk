@@ -1,0 +1,10 @@
+[preset00]
+// Layer 3b bundled preset — "Simple Zoom". A minimal preset that
+// validates the runtime: a slowly oscillating rotation plus a small
+// bass-reactive zoom. No per-vertex math; the runtime applies the
+// per-frame zoom/rot at every mesh vertex automatically.
+fDecay=0.98
+cx=0.5
+cy=0.5
+per_frame_1=zoom = 1.005 + 0.005 * bass_att;
+per_frame_2=rot  = 0.01 * sin(time * 0.3);

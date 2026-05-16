@@ -36,6 +36,24 @@ Popup {
     property var saveRecents: []
     property var saveVolumes: []
 
+    // "Preview is the active audio source" — true while the streaming
+    // preview (raw CDDA → pipe → sink) is feeding the engine. The
+    // streaming source URL is the synthetic `preview://cd-rip` rather
+    // than a file://, so the predicate is just a URL-scheme check.
+    // Lifted to the Popup so the track-list delegate can read it
+    // without crossing scopes.
+    readonly property bool _previewActive:
+        audio.source !== undefined
+        && audio.source.toString().startsWith("preview://")
+
+    // "Engine has something to play / pause / seek through". True for
+    // either FLAC playback (playlist has a current row) or the
+    // streaming preview. Also lifted to the Popup so the transport
+    // bindings further down (which reference `ripView._audioReady`)
+    // resolve in scope.
+    readonly property bool _audioReady:
+        playlist.hasCurrent || _previewActive
+
     background: Rectangle {
         color: "black"
         border.color: ripView.subtleLine
@@ -139,27 +157,6 @@ Popup {
         const m = Math.floor(s / 60)
         const r = Math.floor(s) % 60
         return m + ":" + (r < 10 ? "0" : "") + r
-    }
-
-    // Keyboard navigation for stub/design review:
-    //   ← / →    step backward / forward through demo stages
-    //   space    toggle auto-advance timer
-    // Scoped to the rip view via `enabled: ripView.opened`. Will come
-    // out with the stub when RipWorker lands.
-    Shortcut {
-        sequence: "Left"
-        enabled: ripView.opened
-        onActivated: ripper.demoStep(-1)
-    }
-    Shortcut {
-        sequence: "Right"
-        enabled: ripView.opened
-        onActivated: ripper.demoStep(+1)
-    }
-    Shortcut {
-        sequence: "Space"
-        enabled: ripView.opened
-        onActivated: ripper.demoToggleAutoAdvance()
     }
 
     // When the rip view opens, swing the disc's light in — the
@@ -283,28 +280,21 @@ Popup {
                 }
             }
 
-            // Top-right indicator. Prefers an estimated-time-remaining
-            // readout when we're in the read phase (the long phase that
-            // benefits from one); falls back to the demo-step counter
-            // otherwise. The keyboard-shortcut hint moved out — bare ←
-            // → ⎵ chrome isn't really self-evident anyway, and the dev
-            // path is short. Reference ripper.state in the expression
-            // so the binding re-evaluates on every state change
-            // (demoStepIndex / etaSec are plain invokables / properties).
+            // Top-right indicator. Estimated time remaining during the
+            // read phase (the long phase that benefits from one); empty
+            // otherwise.
             Text {
                 id: stepIndicator
                 anchors.right: parent.right
                 anchors.rightMargin: 14
                 anchors.verticalCenter: parent.verticalCenter
                 text: {
-                    const _ = ripper.state
                     if (ripper.state === 3 /*Reading*/ && ripper.etaSec > 0) {
                         const m = Math.floor(ripper.etaSec / 60)
                         const s = ripper.etaSec % 60
                         return m + ":" + (s < 10 ? "0" : "") + s + " remaining"
                     }
-                    return "step " + (ripper.demoStepIndex() + 1)
-                         + "/" + ripper.demoStepCount()
+                    return ""
                 }
                 color: ripView.muted
                 font.family: "Menlo"
@@ -390,18 +380,62 @@ Popup {
                 visible: ripper.state === 1 /*WaitingForDisc*/
                          && !ripper.discPresent
 
-                Text {
+                ColumnLayout {
                     anchors.centerIn: parent
-                    horizontalAlignment: Text.AlignHCenter
                     width: parent.width - 32
-                    text: ripper.inBatch
-                          ? "Insert disc " + ripper.batchExpectedDisc
-                            + " to continue"
-                          : "Insert a CD to rip"
-                    color: ripView.primary
-                    font.pixelSize: 26
-                    font.bold: true
-                    wrapMode: Text.WordWrap
+                    spacing: 6
+
+                    Text {
+                        Layout.fillWidth: true
+                        horizontalAlignment: Text.AlignHCenter
+                        text: ripper.inBatch
+                              ? "Insert disc " + ripper.batchExpectedDisc
+                                + " to continue"
+                              : "Insert a CD to rip"
+                        color: ripView.primary
+                        font.pixelSize: 26
+                        font.bold: true
+                        wrapMode: Text.WordWrap
+                    }
+                    // Skip-disc hint: in a batch, any disc from the set
+                    // is accepted (we identify via MB and look up the
+                    // disc's actual position). Out-of-set discs fall
+                    // through to a normal "where do you want to save it"
+                    // prompt because they don't belong in the batch
+                    // folder.
+                    Text {
+                        visible: ripper.inBatch
+                        Layout.fillWidth: true
+                        horizontalAlignment: Text.AlignHCenter
+                        text: "(or any other disc from this set)"
+                        color: ripView.muted
+                        font.pixelSize: 11
+                        wrapMode: Text.WordWrap
+                    }
+                    // Skip this disc: mark the current expected disc
+                    // as `skipped` in the batch JSON and advance to
+                    // the next pending one. parent_folder memory
+                    // persists, so subsequent discs auto-save into
+                    // the same place.
+                    Text {
+                        visible: ripper.inBatch
+                        Layout.alignment: Qt.AlignHCenter
+                        text: "Skip this one"
+                        color: skipMouse.containsMouse
+                               ? ripView.accent
+                               : ripView.veryMuted
+                        font.pixelSize: 11
+                        font.underline: skipMouse.containsMouse
+
+                        MouseArea {
+                            id: skipMouse
+                            anchors.fill: parent
+                            anchors.margins: -6
+                            hoverEnabled: true
+                            cursorShape: Qt.PointingHandCursor
+                            onClicked: ripper.skipCurrentDisc()
+                        }
+                    }
                 }
             }
 
@@ -528,6 +562,79 @@ Popup {
                     visible: ripper.discPresent
                 }
 
+                // Mini transport above the track list. Wired to the
+                // same AudioEngine the main player uses — during a
+                // batch rip this controls the streaming preview's
+                // playback through the same QAudioSink. Duration +
+                // position come from the synthetic preview segment
+                // that the worker populated with the TOC-derived
+                // disc duration when previewStreamStart fired.
+                //
+                // `ripView._previewActive` and `ripView._audioReady`
+                // are lifted to the Popup so the track-list delegate
+                // and these transport bindings share the same predicate.
+
+                RowLayout {
+                    Layout.fillWidth: true
+                    visible: ripper.discPresent
+                    spacing: 6
+
+                    Button {
+                        text: "⏮"
+                        flat: true
+                        Layout.preferredHeight: 24
+                        Layout.preferredWidth: 28
+                        font.pixelSize: 12
+                        padding: 0
+                        enabled: playlist.hasCurrent
+                        onClicked: playlist.previous()
+                    }
+                    Button {
+                        text: audio.playing ? "⏸" : "▶"
+                        flat: true
+                        Layout.preferredHeight: 24
+                        Layout.preferredWidth: 30
+                        font.pixelSize: 14
+                        padding: 0
+                        enabled: ripView._audioReady
+                        onClicked: {
+                            if (audio.playing) audio.pause()
+                            else audio.play()
+                        }
+                    }
+                    Button {
+                        text: "⏭"
+                        flat: true
+                        Layout.preferredHeight: 24
+                        Layout.preferredWidth: 28
+                        font.pixelSize: 12
+                        padding: 0
+                        enabled: playlist.hasCurrent
+                        onClicked: playlist.next()
+                    }
+
+                    PLYRSeekSlider {
+                        Layout.fillWidth: true
+                        Layout.preferredHeight: 20
+                        enabled: ripView._audioReady && audio.duration > 0
+                        from: 0
+                        to:   Math.max(1, audio.duration / 1000.0)
+                        value: audio.position / 1000.0
+                        onMoved: (newValue) => audio.seek(newValue * 1000)
+                    }
+
+                    Text {
+                        text: ripView.fmtTime(audio.position / 1000.0)
+                             + " / "
+                             + ripView.fmtTime(audio.duration / 1000.0)
+                        color: ripView.muted
+                        font.family: "Menlo"
+                        font.pixelSize: 9
+                        Layout.preferredWidth: 78
+                        horizontalAlignment: Text.AlignRight
+                    }
+                }
+
                 ListView {
                     id: trackList
                     Layout.fillWidth: true
@@ -568,11 +675,125 @@ Popup {
                     }
 
                     delegate: Rectangle {
+                        id: trackRow
                         width: ListView.view.width
                         height: 26
-                        color: (modelData.number === ripper.currentTrackNumber)
+
+                        // CD-icon highlight: this is the row the worker
+                        // is currently scanning off the disc. Wins over
+                        // play-icon when both would be true.
+                        readonly property bool isReadingThis:
+                            modelData.number === ripper.currentTrackNumber
+
+                        // "Currently playing" splits into two cases:
+                        //
+                        //  (a) Streaming preview is the active audio
+                        //      source. The streaming source URL is
+                        //      `preview://cd-rip`, NOT a folder path —
+                        //      so we can't use playlist.folderPath here.
+                        //      Instead, compute a 0..1 fraction from
+                        //      audio.position / audio.duration and
+                        //      check whether it lands in this row's
+                        //      [startFraction, endFraction) window.
+                        //      Guarded with `_previewActive` so during
+                        //      normal FLAC playback this branch never
+                        //      lights up rows on neighbouring discs.
+                        //
+                        //  (b) The user has clicked into one of the
+                        //      disc's saved FLAC tracks — playlist
+                        //      drives playback now, audio.source is a
+                        //      file:// URL, and we match by track
+                        //      number AND folder-rooted-in-this-disc.
+                        //      `currentDiscPlaybackPath` is the temp
+                        //      dir during the rip and the saved path
+                        //      after; it's the right anchor either way.
+                        readonly property bool _previewPlayingHere: {
+                            if (!ripView._previewActive) return false
+                            if (audio.duration <= 0) return false
+                            const sf = (modelData.startFraction !== undefined)
+                                       ? modelData.startFraction : -1
+                            const ef = (modelData.endFraction !== undefined)
+                                       ? modelData.endFraction : -1
+                            if (sf < 0 || ef <= sf) return false
+                            const frac = audio.position / audio.duration
+                            return frac >= sf && frac < ef
+                        }
+                        // File-playback case: the user has clicked a
+                        // saved FLAC; audio.source is a file:// URL
+                        // pointing into the disc's folder. We check the
+                        // URL itself rather than playlist.folderPath
+                        // because during a batch rip the playlist is
+                        // rooted at the batch *parent*, not the per-
+                        // disc folder. Match by track number + the
+                        // source being inside the disc folder.
+                        readonly property bool _filePlayingHere: {
+                            if (ripView._previewActive) return false
+                            if (!playlist.hasCurrent) return false
+                            if (playlist.currentTrackNumber !== modelData.number)
+                                return false
+                            const discPath = ripper.currentDiscPlaybackPath
+                            if (!discPath) return false
+                            const src = audio.source
+                                        ? audio.source.toString() : ""
+                            if (!src.startsWith("file://")) return false
+                            // file:// + path-prefix match means the
+                            // currently-playing file lives inside the
+                            // disc folder (with a trailing slash so
+                            // /foo doesn't match /foo-bar).
+                            return src.indexOf(discPath + "/") >= 0
+                        }
+
+                        readonly property bool isPlayingHere:
+                            !isReadingThis
+                            && (_previewPlayingHere || _filePlayingHere)
+
+                        // Pending = the worker hasn't even started
+                        // reading this track. Its FLAC doesn't exist
+                        // yet, so it's not playable; render greyed
+                        // out and swallow no clicks.
+                        readonly property bool _isPending:
+                            (modelData.status || "") === "pending"
+
+                        opacity: _isPending ? 0.4 : 1.0
+
+                        color: (isPlayingHere || isReadingThis)
                                 ? Qt.rgba(0.05, 0.10, 0.20, 1.0)
                                 : "transparent"
+
+                        // Single-click is a no-op (could later select
+                        // for keyboard nav). Double-click jumps audio
+                        // playback to this track via the playlist —
+                        // playCurrentAndQueueNext in main.cpp does the
+                        // actual play+enqueue once setCurrentIndex
+                        // fires. Disabled on pending rows so they read
+                        // as not-yet-playable. MouseArea-only (no
+                        // accepted = false games) — the ListView's
+                        // Flickable handles scroll/drag independently.
+                        MouseArea {
+                            anchors.fill: parent
+                            enabled: !trackRow._isPending
+                            cursorShape: enabled ? Qt.PointingHandCursor
+                                                 : Qt.ArrowCursor
+                            onDoubleClicked: {
+                                if (!modelData) return
+                                // Find the playlist row whose path is
+                                // <discFolder>/track_NN.flac for this
+                                // track number. The rip worker names
+                                // FLACs as track_%02u.flac, and
+                                // PlaylistModel.appendTrack stores the
+                                // absolute path as Track.url.
+                                const n = modelData.number
+                                const idx = playlist.indexOfRipTrack(
+                                    ripper.currentDiscPlaybackPath, n)
+                                if (idx >= 0) {
+                                    playlist.setCurrentIndex(idx)
+                                }
+                                // Else: encoding is in flight but
+                                // discTrackReady hasn't fired yet for
+                                // this row — silently no-op, the user
+                                // can double-click again a moment later.
+                            }
+                        }
 
                         RowLayout {
                             anchors.fill: parent
@@ -584,7 +805,8 @@ Popup {
                                 Layout.preferredWidth: 22
                                 text: (modelData.number < 10 ? "0" : "")
                                       + modelData.number
-                                color: (modelData.number === ripper.currentTrackNumber)
+                                color: (trackRow.isPlayingHere
+                                        || trackRow.isReadingThis)
                                        ? ripView.accent : ripView.veryMuted
                                 font.family: "Menlo"; font.pixelSize: 10
                                 horizontalAlignment: Text.AlignRight
@@ -592,6 +814,9 @@ Popup {
                             Text {
                                 Layout.preferredWidth: 16
                                 text: {
+                                    if (trackRow.isReadingThis) return "💿"
+                                    if (trackRow.isPlayingHere)
+                                        return audio.playing ? "▶" : "❚❚"
                                     const st = modelData.status || ""
                                     if (st === "ok")       return "✓"
                                     if (st === "warn")     return "⚠"
@@ -602,6 +827,8 @@ Popup {
                                     return ""
                                 }
                                 color: {
+                                    if (trackRow.isReadingThis) return ripView.accent
+                                    if (trackRow.isPlayingHere) return ripView.accent
                                     const st = modelData.status || ""
                                     if (st === "ok")   return ripView.accent
                                     if (st === "warn") return Qt.rgba(1.0, 0.78, 0.30, 0.95)
@@ -614,7 +841,8 @@ Popup {
                             Text {
                                 Layout.fillWidth: true
                                 text: modelData.title || "Track " + modelData.number
-                                color: (modelData.number === ripper.currentTrackNumber)
+                                color: (trackRow.isPlayingHere
+                                        || trackRow.isReadingThis)
                                        ? ripView.primary : ripView.muted
                                 font.pixelSize: 11
                                 elide: Text.ElideRight
@@ -774,8 +1002,13 @@ Popup {
                     text: "Delete rip"
                     onClicked: {
                         cancelSaveDialog.close()
-                        ripper.stopRip(/*deleteBatch=*/false)
-                        ripView.close()
+                        // Drop the staged temp dir but keep the batch
+                        // resumable (the disc itself can still be
+                        // re-ripped later from a fresh insertion).
+                        ripper.discardStagedRip()
+                        // Single-disc rips end here; batches transition
+                        // back to WaitingForDisc and stay open.
+                        if (!ripper.inBatch) ripView.close()
                     }
                 }
             }

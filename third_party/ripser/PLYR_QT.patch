@@ -1,0 +1,108 @@
+PLYR-Qt vendoring patch for ripser.cpp
+=======================================
+
+This documents the minimal, surgical edits applied to upstream
+ripser.cpp (Ulrich Bauer, MIT) so the file can be statically linked
+as a library into plyr_qt instead of running as a stand-alone CLI.
+The upstream source is otherwise untouched; in particular the
+persistence-homology algorithm itself is unchanged.
+
+Three compile-time knobs were introduced, all off by default so the
+original ripser.cpp still builds unchanged with a plain
+`g++ ripser.cpp -o ripser`:
+
+  -DRIPSER_NO_MAIN          Fences the CLI driver (`main()`, the
+                            file-format readers, `print_usage_and_exit`,
+                            and the `enum file_format`). When set, the
+                            translation unit exports only the templated
+                            `ripser<>` class and its supporting types
+                            (plus the trampoline below if enabled).
+
+  -DRIPSER_USE_OUTPUT_HOOK  Redirects the per-pair `std::cout` output
+                            that ripser produces under
+                            `PRINT_PERSISTENCE_PAIRS` to two extern
+                            functions the caller supplies:
+
+                                void ripser_begin_dim(int dim);
+                                void ripser_emit_pair(int dim,
+                                                      value_t birth,
+                                                      value_t death);
+
+                            `death` is +infinity for an unkillable
+                            feature (the eternal connected component,
+                            or any H>=1 feature that survives the
+                            filtration threshold).
+
+  -DRIPSER_PLYR_QT_TRAMPOLINE  Appends one extern-"C" function at
+                            the bottom of the TU:
+
+                                void phRunRipser(const float* lowerDistances,
+                                                 int n,
+                                                 float threshold,
+                                                 int dimMax);
+
+                            This is the only entry point downstream
+                            code calls. It move-constructs a
+                            compressed_lower_distance_matrix from the
+                            flat input array and runs Ripser at
+                            ratio=1.0, modulus=2, Z/2Z coefficients.
+
+Edit summary (unified-diff style hunks, not literal `diff -u`):
+
+* Near the top of the file (after `typedef coefficient_t`), declared
+  the two extern hook functions inside
+  `#if defined(RIPSER_USE_OUTPUT_HOOK)`.
+
+* Added `#include <limits>` to the standard-header block (used by the
+  `std::numeric_limits<value_t>::infinity()` call we emit for
+  unkillable features).
+
+* Each `std::cout` site under `PRINT_PERSISTENCE_PAIRS` (there are
+  six: two `ripser_begin_dim` headers and four pair emits) was wrapped
+  in an `#ifdef RIPSER_USE_OUTPUT_HOOK ... #else <original cout>
+  #endif` block, so the original CLI path is byte-identical when the
+  hook macro is undefined.
+
+* The CLI driver block — `enum file_format` through the end of
+  `int main(int argc, char** argv)` — was wrapped in
+  `#ifndef RIPSER_NO_MAIN ... #endif`.
+
+* A new section was appended at the very bottom of the file, behind
+  `#if defined(RIPSER_PLYR_QT_TRAMPOLINE)`, defining the extern-"C"
+  trampoline `phRunRipser`. It move-constructs a
+  compressed_lower_distance_matrix from the caller's flat
+  lower-triangular array and invokes ripser<...>::compute_barcodes()
+  at ratio=1.0, modulus=2.
+
+* Removed the `static` qualifier from four function-local
+  enumerator caches inside `class ripser<>`:
+
+    get_zero_pivot_facet:     static simplex_boundary_enumerator   facets(0, *this);
+    get_zero_pivot_cofacet:   static simplex_coboundary_enumerator cofacets(*this);
+    init_coboundary_and_get_pivot: static simplex_coboundary_enumerator cofacets(*this);
+    add_simplex_coboundary:   static simplex_coboundary_enumerator cofacets(*this);
+
+  These statics held a reference (`const ripser& parent`) to *this.
+  In the original CLI they're harmless because the process runs
+  exactly one Ripser computation in its lifetime. In our use we
+  invoke Ripser many times per session on independent instances --
+  the second instance's compute_barcodes() then dereferences a
+  freed `parent` (use-after-free, crashes nondeterministically).
+  This patch is unconditional rather than gated, because the
+  upstream CLI still constructs/destructs each enumerator exactly
+  once (cost is a couple-dozen-bytes of stack per construction).
+
+Build invocation (CMakeLists.txt):
+
+    add_library(ripser STATIC third_party/ripser/ripser.cpp)
+    target_compile_definitions(ripser PUBLIC
+        RIPSER_NO_MAIN
+        RIPSER_USE_OUTPUT_HOOK
+        RIPSER_PLYR_QT_TRAMPOLINE)
+
+Caller responsibility: provide ripser_begin_dim / ripser_emit_pair
+in some translation unit linked alongside ripser.cpp. PLYR-Qt does
+this in src/PersistentHomologyAnalyzer.cpp.
+
+The patch is reversible: each edit is bracketed and selectable by
+toggling the two compile-time knobs.

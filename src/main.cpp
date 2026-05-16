@@ -1,4 +1,5 @@
 #include "AudioEngine.h"
+#include "AudioFeatures.h"
 #include "CdShield.h"
 #include "EqController.h"
 #include "FftProcessor.h"
@@ -45,8 +46,10 @@ int main(int argc, char *argv[])
 
     PlaylistModel playlist;
     FftProcessor  fft;
+    AudioFeatures features;
     AudioEngine   audio;
     audio.setFftProcessor(&fft);
+    audio.setAudioFeatures(&features);
     EqController  eq(&audio);
 
     // Gapless wiring.
@@ -151,24 +154,113 @@ int main(int argc, char *argv[])
     // happen on a worker thread it owns (RipWorker). When a disc is saved
     // we auto-open it in the playlist and start playback — this is what
     // makes a 14-disc batch usable: disc 1 plays while disc 2 keeps ripping.
-    plyr::cd::Ripper ripper;
-    QObject::connect(&ripper, &plyr::cd::Ripper::discSaved,
-                     &playlist, [&playlist, &audio](const QString& savedPath) {
-                         playlist.openFolder(savedPath);
-                         if (playlist.count() > 0) {
-                             playlist.setCurrentIndex(0);
-                             audio.play();
+    //
+    // CdShield is passed in so the Ripper can register a disc-appeared
+    // listener — that's what wakes the WaitingForDisc → Identifying
+    // transition without polling.
+    plyr::cd::Ripper ripper(&cdShield);
+
+    // ---- CD rip streaming preview ------------------------------------
+    // Raw-PCM signals from the worker → AudioEngine queued slots. CDDA
+    // bytes flow drive → disc buffer → audio sink within ~2 s of rip
+    // start; the user is listening to disc N while disc N's sectors are
+    // still being read.
+    //
+    // When the stream kicks off (= audio is about to start playing from
+    // the disc), also swing the main playlist over to the batch's
+    // parent folder so the user sees the full set's already-saved
+    // discs. Skip the reopen if the playlist is already inside the
+    // parent hierarchy — don't disturb a "just saved disc 1, playing
+    // it" state. No-batch / first-disc-of-new-batch cases get handled
+    // by `discTrackReady` (it falls back to opening the temp dir).
+    QObject::connect(&ripper, &plyr::cd::Ripper::previewStreamStart,
+                     &audio,
+                     [&audio, &playlist, &ripper](qint64 ms) {
+                         audio.startPreviewStream(ms);
+                         const QString parent = ripper.batchParentFolder();
+                         if (parent.isEmpty()) return;
+                         const QString cur = playlist.folderPath();
+                         if (cur == parent) return;
+                         if (cur.startsWith(parent + QChar('/'))) return;
+                         playlist.openFolder(parent);
+                     });
+    QObject::connect(&ripper, &plyr::cd::Ripper::previewPcm,
+                     &audio,  &AudioEngine::pushPreviewPcm);
+    QObject::connect(&ripper, &plyr::cd::Ripper::previewStreamStop,
+                     &audio,  &AudioEngine::stopPreviewStream);
+
+    // discTrackReady: each FLAC encode lands. Decide where the main
+    // playlist should be rooted:
+    //   * Batch with parent_folder set: open the parent so the user
+    //     sees previously-saved discs from the same set. The worker
+    //     writes this disc directly into <parent>/<finalName>/, so
+    //     the in-progress tracks belong there too — we appendTrack
+    //     them to the playlist as they encode.
+    //   * No parent yet (standalone / first disc of a fresh batch):
+    //     open the temp dir itself; same appendTrack flow.
+    // Streaming preview is doing the actual audio either way — we
+    // don't setCurrentIndex / play here.
+    QObject::connect(&ripper, &plyr::cd::Ripper::discTrackReady,
+                     &playlist,
+                     [&playlist, &ripper](const QString& tempDir,
+                                          const QString& flacPath,
+                                          int /*trackNumber*/) {
+                         const QString parent = ripper.batchParentFolder();
+                         const QString desiredFolder =
+                             !parent.isEmpty() ? parent : tempDir;
+                         if (playlist.folderPath() != desiredFolder) {
+                             playlist.openFolder(desiredFolder);
                          }
+                         playlist.appendTrack(flacPath);
+                     });
+
+    // discSaved: the disc is now durably saved. If we wrote in-place
+    // (batch with known parent), nothing moved — the playlist's URLs
+    // already point at the right files. For the standalone/first-disc
+    // case the temp dir got renamed into the user's chosen folder;
+    // remap so the playlist follows. Streaming preview continues to
+    // play out the disc's buffered audio; the user can manually click
+    // a different track at any time to swap into FLAC playback.
+    QObject::connect(&ripper, &plyr::cd::Ripper::discSaved,
+                     &playlist,
+                     [&playlist, &audio]
+                     (const QString& fromTempDir, const QString& finalPath) {
+                         if (fromTempDir == finalPath) {
+                             // In-place rip already lives at finalPath.
+                             // Nothing to move; the playlist scan
+                             // through openFolder() at rip start
+                             // already covers the parent. A targeted
+                             // rescan keeps section headers in sync.
+                             return;
+                         }
+                         if (fromTempDir.isEmpty()
+                             || playlist.folderPath() != fromTempDir)
+                         {
+                             // Out-of-place save AND playlist isn't on
+                             // the temp dir — cold-open the saved
+                             // folder + play.
+                             playlist.openFolder(finalPath);
+                             if (playlist.count() > 0) {
+                                 playlist.setCurrentIndex(0);
+                                 audio.play();
+                             }
+                             return;
+                         }
+                         // Out-of-place save with playlist on the temp
+                         // dir: re-target URLs without resetting the
+                         // current playback position.
+                         playlist.remapFolder(fromTempDir, finalPath);
                      });
 
     QQmlApplicationEngine engine;
     auto* ctx = engine.rootContext();
-    ctx->setContextProperty("playlist",    &playlist);
-    ctx->setContextProperty("fft",         &fft);
-    ctx->setContextProperty("audio",       &audio);
-    ctx->setContextProperty("eq",          &eq);
-    ctx->setContextProperty("ripper",      &ripper);
-    ctx->setContextProperty("systemPaths", &systemPaths);
+    ctx->setContextProperty("playlist",      &playlist);
+    ctx->setContextProperty("fft",           &fft);
+    ctx->setContextProperty("audioFeatures", &features);
+    ctx->setContextProperty("audio",         &audio);
+    ctx->setContextProperty("eq",            &eq);
+    ctx->setContextProperty("ripper",        &ripper);
+    ctx->setContextProperty("systemPaths",   &systemPaths);
 
     // Pick the phone-portrait layout on iOS/Android, the desktop layout
     // elsewhere. PLYR_FORCE_MOBILE=1 overrides so the mobile UI can be

@@ -1,0 +1,16 @@
+[preset00]
+// Layer 3b bundled preset — "Swirl". Bass-driven swirl plus a fast
+// global rotation. Demonstrates q-register passing from per-frame to
+// per-vertex (the swirl amplitude is q1).
+fDecay=0.96
+cx=0.5
+cy=0.5
+per_frame_1=zoom = 1.0 + 0.02 * bass_att - 0.01 * treb_att;
+per_frame_2=rot  = 0.02 * sin(time * 0.5);
+per_frame_3=q1   = bass_att;
+per_frame_4=wave_r = 0.5 + 0.5 * sin(time * 0.7);
+per_frame_5=wave_g = 0.5 + 0.5 * sin(time * 0.6 + 1);
+per_frame_6=wave_b = 0.5 + 0.5 * sin(time * 0.5 + 2);
+per_vertex_1=ang = atan2(y - cy, x - cx);
+per_vertex_2=dx  = dx + 0.003 * sin(ang * 3 + time) * q1;
+per_vertex_3=dy  = dy + 0.003 * cos(ang * 3 + time) * q1;

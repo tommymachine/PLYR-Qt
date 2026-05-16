@@ -30,10 +30,12 @@ struct Disc {
 };
 
 struct Release {
-    std::string id;         // MBID of the release
+    std::string id;             // MBID of the release
+    std::string releaseGroupId; // MBID of the release-group (same across all
+                                // pressings — the key for multi-disc batches)
     std::string title;
-    std::string artist;     // joined artist-credit phrase
-    std::string date;       // "YYYY", "YYYY-MM-DD" — whatever MB has
+    std::string artist;         // joined artist-credit phrase
+    std::string date;           // "YYYY", "YYYY-MM-DD" — whatever MB has
     std::string country;
     Disc disc;
 };
