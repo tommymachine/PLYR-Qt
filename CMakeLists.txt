@@ -37,7 +37,20 @@ find_package(Qt6 6.7 REQUIRED COMPONENTS
     QuickControls2
     Multimedia
     ShaderTools
+    Sql           # SQLite-backed library DB (concerto::library::LibraryDatabase).
 )
+
+# TagLib (Homebrew, LGPL-2.1) — multi-format tag I/O for the folder-time
+# library pipeline. **Dynamic link only.** The LGPL-2.1 closed-source
+# pattern is the same shape we already use for libFLAC: ship libtag.dylib
+# in Contents/Frameworks/, @rpath resolution lets the user substitute a
+# rebuilt copy. Never statically link TagLib.
+#
+# CMake config landed in TagLib 1.12+; Homebrew installs taglib-config.cmake
+# under <prefix>/lib/cmake/taglib/ which find_package picks up directly.
+# We export TAGLIB_FOUND so optional builds (e.g. the iOS configuration
+# that doesn't yet pull this in) can skip the library targets.
+find_package(taglib CONFIG REQUIRED)
 
 qt_standard_project_setup(REQUIRES 6.5)
 
@@ -265,6 +278,18 @@ qt_add_qml_module(concerto
         src/SsmTexture.h
         src/FlacDecode.cpp
         src/FlacDecode.h
+        # Folder-time library metadata pipeline (Steps 1-3 of
+        # docs/LIBRARY_METADATA_PLAN.md). SQLite store, multiformat
+        # tag I/O, content-stable hashing, and the FolderIdentifier
+        # strategy chain (Stages Z + A + B; C / D stubbed).
+        src/LibraryDatabase.cpp
+        src/LibraryDatabase.h
+        src/AudioTagIo.cpp
+        src/AudioTagIo.h
+        src/AudioFrameHash.cpp
+        src/AudioFrameHash.h
+        src/FolderIdentifier.cpp
+        src/FolderIdentifier.h
 )
 
 # Embed the bundled AccurateRip drive-offset table into concerto so the
@@ -630,6 +655,53 @@ if(NOT IOS AND NOT ANDROID)
     )
     set_target_properties(mbquery_cli PROPERTIES MACOSX_BUNDLE FALSE)
 
+    # Folder-time library pipeline test harness. Mirrors mbquery_cli's
+    # shape: a single QCoreApplication-backed CLI that exercises the
+    # LibraryDatabase + AudioTagIo + AudioFrameHash + FolderIdentifier
+    # stack against a folder of audio files. Used to validate Steps 1-3
+    # of docs/LIBRARY_METADATA_PLAN.md before the QML library view lands.
+    qt_add_executable(library_cli
+        src/library_cli_main.cpp
+        src/LibraryDatabase.cpp
+        src/LibraryDatabase.h
+        src/AudioTagIo.cpp
+        src/AudioTagIo.h
+        src/AudioFrameHash.cpp
+        src/AudioFrameHash.h
+        src/FolderIdentifier.cpp
+        src/FolderIdentifier.h
+        # Reuse the existing pipeline pieces verbatim — same shapes the
+        # rip flow uses.
+        src/MusicBrainz.cpp
+        src/MusicBrainz.h
+        src/MetadataModel.cpp
+        src/MetadataModel.h
+        src/MetadataScoring.cpp
+        src/MetadataScoring.h
+        src/MetadataCache.cpp
+        src/MetadataCache.h
+        src/SystemPaths.cpp
+        src/SystemPaths.h
+        # FlacTags is pulled in only for buildVorbisTags() / debugDumpTrack
+        # symbol resolution where AudioTagIo's CONCERTO_* writeback later
+        # delegates. Cheap to compile, keeps the link surface aligned with
+        # mbquery_cli.
+        src/FlacTags.cpp
+        src/FlacTags.h
+        src/FlacEncode.cpp
+        src/FlacEncode.h
+    )
+    target_include_directories(library_cli PRIVATE src)
+    target_link_libraries(library_cli PRIVATE
+        Qt6::Core
+        Qt6::Network
+        Qt6::Sql
+        Qt6::Multimedia    # QAudioDecoder for AudioFrameHash
+        TagLib::tag
+        FLAC
+    )
+    set_target_properties(library_cli PROPERTIES MACOSX_BUNDLE FALSE)
+
     # Native CD-DA reader. Cross-platform shape lives in CdDevice.h; the
     # macOS implementation uses IOKit's BSD-client ioctls (DKIOCCDREAD &
     # friends) — public, entitlement-free, App-Store-eligible. Linux and
@@ -708,6 +780,12 @@ target_link_libraries(concerto PRIVATE
     Qt6::Quick
     Qt6::QuickControls2
     Qt6::Multimedia
+    # SQLite-backed library DB (concerto::library::LibraryDatabase). Qt6
+    # bundles the SQLite driver as a plugin; no separate sqlite dep needed.
+    Qt6::Sql
+    # TagLib (LGPL-2.1, dynamic-link only — see find_package comment near
+    # the top of this file). Powers AudioTagIo's multiformat read/write.
+    TagLib::tag
     arverify
     FLAC
     kissfft
