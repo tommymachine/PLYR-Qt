@@ -171,8 +171,17 @@ float KeyEstimator::correlate(const float* a12, const float* tmpl12)
 }
 
 
+void KeyEstimator::setActive(bool a)
+{
+    if (m_active == a) return;
+    m_active = a;
+    emit activeChanged();
+}
+
+
 void KeyEstimator::onChromaUpdated()
 {
+    if (!m_active) return;
     if (!m_chromaSource) return;
     std::array<float, PITCH_CLASSES> chr {};
     m_chromaSource->fillChromaSmoothed(chr.data());

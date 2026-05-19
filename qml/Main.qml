@@ -383,6 +383,33 @@ ApplicationWindow {
         onActivated: audio.seek(Math.min(audio.duration, audio.position + 5000))
     }
 
+    // Visualizer hotkeys. Cmd+0..9 selects entries 0..9 of
+    // `visualizers.available`; Cmd+Shift+0..3 selects entries 10..13. Qt's
+    // shortcut grammar uses "Ctrl+" for the platform's primary modifier,
+    // which on macOS is the Cmd key — see QKeySequence::PortableText.
+    // Bounds-guarded so unconfigured slots are silent no-ops. Written
+    // long-hand rather than via Repeater because Shortcut is a
+    // QQuickAttachedObject, not an Item — Repeater only instantiates Items.
+    function _selectVisualizer(idx) {
+        const list = visualizers.available
+        if (idx < 0 || idx >= list.length) return
+        visualizers.currentVisualizerId = list[idx].id
+    }
+    Shortcut { sequence: "Ctrl+0"; context: Qt.ApplicationShortcut; onActivated: root._selectVisualizer(0) }
+    Shortcut { sequence: "Ctrl+1"; context: Qt.ApplicationShortcut; onActivated: root._selectVisualizer(1) }
+    Shortcut { sequence: "Ctrl+2"; context: Qt.ApplicationShortcut; onActivated: root._selectVisualizer(2) }
+    Shortcut { sequence: "Ctrl+3"; context: Qt.ApplicationShortcut; onActivated: root._selectVisualizer(3) }
+    Shortcut { sequence: "Ctrl+4"; context: Qt.ApplicationShortcut; onActivated: root._selectVisualizer(4) }
+    Shortcut { sequence: "Ctrl+5"; context: Qt.ApplicationShortcut; onActivated: root._selectVisualizer(5) }
+    Shortcut { sequence: "Ctrl+6"; context: Qt.ApplicationShortcut; onActivated: root._selectVisualizer(6) }
+    Shortcut { sequence: "Ctrl+7"; context: Qt.ApplicationShortcut; onActivated: root._selectVisualizer(7) }
+    Shortcut { sequence: "Ctrl+8"; context: Qt.ApplicationShortcut; onActivated: root._selectVisualizer(8) }
+    Shortcut { sequence: "Ctrl+9"; context: Qt.ApplicationShortcut; onActivated: root._selectVisualizer(9) }
+    Shortcut { sequence: "Ctrl+Shift+0"; context: Qt.ApplicationShortcut; onActivated: root._selectVisualizer(10) }
+    Shortcut { sequence: "Ctrl+Shift+1"; context: Qt.ApplicationShortcut; onActivated: root._selectVisualizer(11) }
+    Shortcut { sequence: "Ctrl+Shift+2"; context: Qt.ApplicationShortcut; onActivated: root._selectVisualizer(12) }
+    Shortcut { sequence: "Ctrl+Shift+3"; context: Qt.ApplicationShortcut; onActivated: root._selectVisualizer(13) }
+
     // EQ overlay. Modal popup with backdrop dismiss; the panel itself is
     // EqPanel.qml and gets its data from the `eq` context property.
     Popup {
@@ -993,16 +1020,27 @@ ApplicationWindow {
                 }
             }
 
-            // Right: visualizer — GPU shader (Qt RHI ShaderEffect).
-            // All per-pixel band/segment work is done in shaders/viz.frag;
-            // this QML just pumps fresh FFT data and binds uniforms.
+            // Right: visualizer pane. Hosts either the built-in 16-band
+            // ShaderEffect (id "viz16band") or an "advanced" visualizer
+            // QML loaded by URL from the VisualizerRegistry. The active
+            // viz is `visualizers.currentVisualizerId`; Cmd+0..9 / Cmd+
+            // Shift+0..3 cycle through `visualizers.available`.
             Rectangle {
                 SplitView.minimumWidth: 280
                 color: root.bg
 
+                readonly property bool _is16Band:
+                    visualizers.currentVisualizerId === "viz16band"
+
+                // ---- 16-band default path ---------------------------
+                // Preserved exactly as-is; only `visible` is added so it
+                // hides when an advanced viz takes over. All per-pixel
+                // band/segment work is done in shaders/viz.frag; this
+                // QML just pumps fresh FFT data and binds uniforms.
                 ShaderEffect {
                     id: viz
                     anchors.fill: parent
+                    visible: parent._is16Band
 
                     // FFT uniforms — re-evaluated whenever fft.updated() fires.
                     property vector4d b0: fft.b0
@@ -1032,12 +1070,90 @@ ApplicationWindow {
                 // Drives the FFT refresh at ~60 Hz. `refresh()` runs the
                 // FFT, updates bands/peaks, and emits updated() — which
                 // causes the ShaderEffect's property bindings above to
-                // re-evaluate and trigger a re-render.
+                // re-evaluate and trigger a re-render. Only ticks while
+                // the 16-band shader is the active viz; other visualizers
+                // don't read fft.bX/pX and would just burn CPU.
                 Timer {
                     interval: 16
-                    running:  true
+                    running:  parent._is16Band
                     repeat:   true
                     onTriggered: fft.refresh()
+                }
+
+                // ---- Advanced visualizer path -----------------------
+                // For every registry entry whose id != "viz16band" we
+                // load the corresponding QML by URL. The loaded item
+                // inherits the `audioFeatures`, `fft`, `audio`, `visualizers`
+                // context properties from the root context — see
+                // ScopeView.qml / SpectrumView.qml for the bare-name lookup
+                // pattern. Synchronous load so Cmd+N swaps feel instant.
+                Loader {
+                    id: advancedViz
+                    anchors.fill: parent
+                    visible: !parent._is16Band
+                    active:  !parent._is16Band
+                    asynchronous: false
+                    source: {
+                        if (parent._is16Band) return ""
+                        const info = visualizers.visualizerInfo(
+                            visualizers.currentVisualizerId)
+                        return (info && info.qmlSource) ? info.qmlSource : ""
+                    }
+                    onStatusChanged: {
+                        if (status === Loader.Error) {
+                            console.warn("Visualizer Loader error for",
+                                         visualizers.currentVisualizerId,
+                                         "source:", source)
+                        }
+                    }
+                }
+
+                // Top-right toast confirming a viz swap. Triggered on
+                // every `currentVisualizerIdChanged` (including the one
+                // that fires at app startup from QSettings restore — fine,
+                // it just labels the current viz briefly).
+                Rectangle {
+                    id: vizToast
+                    anchors.top: parent.top
+                    anchors.right: parent.right
+                    anchors.margins: 12
+                    color: Qt.rgba(0, 0, 0, 0.55)
+                    radius: height / 2
+                    height: vizToastLabel.implicitHeight + 10
+                    width:  vizToastLabel.implicitWidth  + 22
+                    opacity: 0
+                    visible: opacity > 0.001
+                    Behavior on opacity { NumberAnimation { duration: 250 } }
+
+                    Text {
+                        id: vizToastLabel
+                        anchors.centerIn: parent
+                        color: "white"
+                        font.pixelSize: 14
+                        text: {
+                            const info = visualizers.visualizerInfo(
+                                visualizers.currentVisualizerId)
+                            const name = (info && info.displayName)
+                                ? info.displayName
+                                : visualizers.currentVisualizerId
+                            return "Visualizer: " + name
+                        }
+                    }
+
+                    Timer {
+                        id: vizToastHide
+                        interval: 1500
+                        repeat: false
+                        onTriggered: vizToast.opacity = 0
+                    }
+
+                    Connections {
+                        target: visualizers
+                        function onCurrentVisualizerIdChanged() {
+                            vizToast.opacity = 1
+                            vizToastHide.restart()
+                        }
+                    }
                 }
 
                 // A/V sync calibration overlay — dot flashes on each

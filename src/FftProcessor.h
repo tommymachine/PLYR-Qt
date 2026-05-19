@@ -16,6 +16,8 @@
 #include <QVariantList>
 #include <QVector4D>
 #include <array>
+#include <atomic>
+#include <qqmlregistration.h>
 #include <vector>
 
 class QAudioBuffer;
@@ -23,6 +25,8 @@ class QAudioFormat;
 
 class FftProcessor : public QObject {
     Q_OBJECT
+    QML_ELEMENT
+    QML_UNCREATABLE("Provided as the 'fft' context property")
 
     // Bands and peaks re-packaged as four vec4s each, for the shader-based
     // visualizer. Each QVector4D binds 1:1 to a std140 vec4 uniform.
@@ -52,6 +56,11 @@ class FftProcessor : public QObject {
     Q_PROPERTY(float displaySlope READ displaySlope WRITE setDisplaySlope
                NOTIFY displaySlopeChanged)
 
+    // When false, refresh() and pushPcm() early-return — no ring writes,
+    // no FFT, no band updates. Flip from QML/GUI to pause analysis without
+    // tearing down the processor.
+    Q_PROPERTY(bool active READ active WRITE setActive NOTIFY activeChanged)
+
 public:
     static constexpr int BAND_COUNT    = 16;
     static constexpr int EQ_BAND_COUNT = 10;
@@ -62,8 +71,9 @@ public:
 
     // Call from QML at the desired frame rate. Runs the FFT, updates
     // smoothed bands + peak-hold values, emits `updated()` so shader
-    // uniforms refresh.
+    // uniforms refresh. No-ops when !m_active.
     Q_INVOKABLE void refresh() {
+        if (!m_active.load(std::memory_order_relaxed)) return;
         float tmp[2 * BAND_COUNT];
         fillBandsAndPeaks(tmp);  // also emits `updated()`
     }
@@ -105,9 +115,13 @@ public:
     float displaySlope() const { return m_displaySlopeDbPerOct; }
     void  setDisplaySlope(float dbPerOct);
 
+    bool  active() const { return m_active.load(std::memory_order_relaxed); }
+    void  setActive(bool a);
+
 signals:
     void updated();     // emit when bands change
     void displaySlopeChanged();
+    void activeChanged();
 
 private:
     // Ring buffer for raw mono samples.
@@ -144,4 +158,14 @@ private:
     // pink-spectrum music plot roughly flat. See FftProcessor.cpp for
     // the per-band scale-factor math.
     float m_displaySlopeDbPerOct = 3.0f;
+
+    // Sample rate. First pushPcm() call adapts this to whatever the
+    // source delivers (mirrors AudioFeatures). 44.1 kHz default matches
+    // AudioWorker's canonical sink format.
+    double m_sampleRate = 44100.0;
+
+    // Gating flag — pushPcm is called from the audio thread while
+    // setActive comes in via QML/GUI, so std::atomic for the cross-thread
+    // visibility. refresh() and pushPcm() early-return when false.
+    std::atomic<bool> m_active {true};
 };

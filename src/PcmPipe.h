@@ -1,6 +1,5 @@
 // QIODevice that buffers an entire decoded track's PCM (appended by a
-// QAudioDecoder) and streams it to a QAudioSink on demand. Emits a
-// `samplesServed` signal on every read for diagnostic taps.
+// QAudioDecoder) and streams it to a QAudioSink on demand.
 //
 // For visualizer/spectrum work, prefer the `peek(offset, ...)` interface:
 // it samples *ahead* of the playhead so the FFT depicts audio that is
@@ -59,7 +58,7 @@ public:
 
     // Read-only tap: copy up to `maxLen` bytes starting `offset` bytes
     // ahead of the current playhead (`m_pos + offset`) into `out`,
-    // WITHOUT advancing the playhead and WITHOUT emitting `samplesServed`.
+    // WITHOUT advancing the playhead.
     //
     // Returns the number of bytes actually copied. May be less than
     // `maxLen` if the decoder hasn't produced enough data yet — that's a
@@ -88,11 +87,6 @@ public:
     // Otherwise the sink goes Idle on every underrun and has to warm back
     // up, which audibly clicks at track boundaries.
     bool   isSequential() const override { return true; }
-
-signals:
-    // Emitted whenever the sink pulls audio out of the pipe. Only valid
-    // during the call. Copy if you need it longer.
-    void samplesServed(const char* data, qint64 bytes);
 
 protected:
     qint64 readData(char* out, qint64 maxLen) override;

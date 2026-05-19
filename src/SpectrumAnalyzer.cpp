@@ -265,6 +265,13 @@ void SpectrumAnalyzer::setFillTint(const QColor& c) {
     m_fillTint = c; emit fillTintChanged();
 }
 
+void SpectrumAnalyzer::setActive(bool a)
+{
+    if (m_active == a) return;
+    m_active = a;
+    emit activeChanged();
+}
+
 QQuickItem* SpectrumAnalyzer::peakProvider() const    { return m_peakItem; }
 QQuickItem* SpectrumAnalyzer::infPeakProvider() const { return m_infPeakItem; }
 
@@ -288,6 +295,7 @@ void SpectrumAnalyzer::resetPeakHold()
 
 void SpectrumAnalyzer::onFeaturesUpdated()
 {
+    if (!m_active) return;
     runPipeline();
     m_dirty.store(true);
     if (m_peakItem)    m_peakItem->markDirty();

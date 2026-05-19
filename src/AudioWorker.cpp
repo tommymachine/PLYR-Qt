@@ -91,21 +91,19 @@ void AudioWorker::init()
     connect(m_sink.get(), &QAudioSink::stateChanged,
             this, &AudioWorker::onSinkStateChanged);
 
-    // The FFT/AudioFeatures used to subscribe to PcmPipe::samplesServed
-    // here (DirectConnection), seeing audio at the moment it was copied
-    // into QAudioSink's period buffer. That made the visualizer trail
-    // the actual audio output by ~15–25 ms (sink → CoreAudio path)
-    // minus the visual pipeline (~20–35 ms compose+vsync), which
-    // landed slightly behind on punchy material.
+    // The FFT/AudioFeatures used to subscribe to a per-read signal on
+    // PcmPipe here (DirectConnection), seeing audio at the moment it
+    // was copied into QAudioSink's period buffer. That made the
+    // visualizer trail the actual audio output by ~15–25 ms (sink →
+    // CoreAudio path) minus the visual pipeline (~20–35 ms compose+
+    // vsync), which landed slightly behind on punchy material.
     //
     // The lookahead tap below feeds them from a peek that's computed
     // analytically on macOS (AudioClock anchor + DisplayClock target
     // − output latency, all in nanosecond-accurate seconds) or from a
     // static 35 ms fallback elsewhere. By the time a frame is composited
     // and presented, the audio those samples represent is the audio
-    // actually leaving the speakers. `samplesServed` is still emitted
-    // from the pipe for any future diagnostic consumer, but the FFT /
-    // features pipeline no longer listens to it.
+    // actually leaving the speakers.
 
     m_positionTimer->setInterval(33);      // ~30 Hz
     connect(m_positionTimer.get(), &QTimer::timeout,

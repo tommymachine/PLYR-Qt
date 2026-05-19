@@ -233,10 +233,19 @@ void HilbertAnalyzer::setAudioSource(AudioFeatures* s)
 }
 
 
+void HilbertAnalyzer::setActive(bool a)
+{
+    if (m_active == a) return;
+    m_active = a;
+    emit activeChanged();
+}
+
+
 // --- Hop handler -----------------------------------------------------------
 
 void HilbertAnalyzer::onFeaturesUpdated()
 {
+    if (!m_active) return;
     if (!m_source) return;
     if (!m_source->fillScopeStereo(m_pullL.data(),
                                    m_pullR.data(),

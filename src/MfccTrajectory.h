@@ -72,6 +72,7 @@ class MfccTrajectory : public QQuickRhiItem {
     Q_PROPERTY(float cameraOrbitHz READ cameraOrbitHz WRITE setCameraOrbitHz
                NOTIFY cameraOrbitHzChanged)
     Q_PROPERTY(int   filledRows READ filledRows NOTIFY trajectoryChanged)
+    Q_PROPERTY(bool active READ active WRITE setActive NOTIFY activeChanged)
 
 public:
     // Project coefficients 1..N_COEFFS-1 -> 12-D feature space. Coeff 0
@@ -101,6 +102,9 @@ public:
 
     int   filledRows() const { return m_filledRows.load(std::memory_order_relaxed); }
 
+    bool  active() const { return m_active.load(std::memory_order_relaxed); }
+    void  setActive(bool a);
+
     // Force a PCA recompute on the next mfcc hop -- e.g. when a new track
     // starts and the previous song's basis would skew the geometry.
     Q_INVOKABLE void resetPCA();
@@ -129,6 +133,7 @@ signals:
     void lineWidthChanged();
     void cameraOrbitHzChanged();
     void trajectoryChanged();
+    void activeChanged();
 
 private slots:
     void onMfccUpdated();
@@ -193,4 +198,5 @@ private:
     QColor m_tailColor      = QColor(0x5B, 0x1E, 0x96);
     float  m_lineWidth      = 2.5f;
     float  m_cameraOrbitHz  = 1.0f / 60.0f;     // 1 rev per 60 s
+    std::atomic<bool> m_active {true};
 };

@@ -126,8 +126,17 @@ void CqtAnalyzer::setAudioSource(AudioFeatures* s)
 }
 
 
+void CqtAnalyzer::setActive(bool a)
+{
+    if (m_active == a) return;
+    m_active = a;
+    emit activeChanged();
+}
+
+
 void CqtAnalyzer::onFeaturesUpdated()
 {
+    if (!m_active) return;
     if (!m_source) return;
     // Pull the last 2048 samples of L+R from AudioFeatures, mono-fold,
     // push to our top-octave ring, then run a hop. This is the standard

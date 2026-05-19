@@ -670,8 +670,16 @@ void MilkdropView::setPresetPath(const QString& p)
     update();
 }
 
+void MilkdropView::setActive(bool a)
+{
+    if (m_active.load(std::memory_order_relaxed) == a) return;
+    m_active.store(a, std::memory_order_relaxed);
+    emit activeChanged();
+}
+
 void MilkdropView::onFeaturesUpdated()
 {
+    if (!m_active.load(std::memory_order_relaxed)) return;
     if (!m_audioSource) return;
     {
         QMutexLocker lk(&m_stagedMutex);

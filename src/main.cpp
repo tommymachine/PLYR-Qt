@@ -6,7 +6,9 @@
 #include "MusicBlocker.h"
 #include "PlaylistModel.h"
 #include "Ripper.h"
+#include "SsmGenerator.h"
 #include "SystemPaths.h"
+#include "VisualizerRegistry.h"
 #include "macos_prewarm.h"
 #ifdef Q_OS_MACOS
 #include "macos_titlebar.h"
@@ -20,6 +22,7 @@
 #include <QQuickStyle>
 #include <QQuickWindow>
 #include <QSettings>
+#include <QThreadPool>
 #include <QTimer>
 
 int main(int argc, char *argv[])
@@ -65,6 +68,7 @@ int main(int argc, char *argv[])
     audio.setFftProcessor(&fft);
     audio.setAudioFeatures(&features);
     EqController  eq(&audio);
+    concerto::viz::VisualizerRegistry visualizers;
 
     // Gapless wiring.
     //
@@ -263,6 +267,36 @@ int main(int argc, char *argv[])
                              playlist.openFolder(desiredFolder);
                          }
                          playlist.appendTrack(flacPath);
+
+                         // Kick the SSM sidecar generator onto the
+                         // global thread pool — ~5-10 s of MFCC + cosine-
+                         // similarity work per track. Stays off the GUI
+                         // thread, off the rip-worker thread, and out of
+                         // the audio path. Sidecar lands at flacPath +
+                         // ".ssm"; it rides along when the temp dir is
+                         // renamed into the final library folder at save
+                         // time. discTrackReady also fires for tracks
+                         // already on disk during a resumed rip — skip
+                         // those if a valid sidecar exists.
+                         const QString sidecarPath = flacPath + QStringLiteral(".ssm");
+                         if (SsmGenerator::isValidSidecar(sidecarPath)) {
+                             return;
+                         }
+                         QThreadPool::globalInstance()->start([flacPath]() {
+                             const auto stats = SsmGenerator::generateForFile(flacPath);
+                             if (stats.success) {
+                                 qInfo("SSM sidecar written for %s "
+                                       "(T=%d, hop=%.2fs, total %.2fs)",
+                                       qUtf8Printable(flacPath),
+                                       stats.T, double(stats.hopSec),
+                                       stats.decodeSec + stats.mfccSec
+                                         + stats.similaritySec + stats.writeSec);
+                             } else {
+                                 qWarning("SSM sidecar generation failed for %s: %s",
+                                          qUtf8Printable(flacPath),
+                                          qUtf8Printable(stats.error));
+                             }
+                         });
                      });
 
     // discSaved: the disc is now durably saved.
@@ -353,6 +387,7 @@ int main(int argc, char *argv[])
     ctx->setContextProperty("eq",            &eq);
     ctx->setContextProperty("ripper",        &ripper);
     ctx->setContextProperty("systemPaths",   &systemPaths);
+    ctx->setContextProperty("visualizers",   &visualizers);
 
     // Pick the phone-portrait layout on iOS/Android, the desktop layout
     // elsewhere. PLYR_FORCE_MOBILE=1 overrides so the mobile UI can be

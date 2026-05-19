@@ -45,6 +45,7 @@ class MfccAnalyzer : public QObject {
 
     Q_PROPERTY(AudioFeatures* audioSource READ audioSource WRITE setAudioSource
                NOTIFY audioSourceChanged)
+    Q_PROPERTY(bool active READ active WRITE setActive NOTIFY activeChanged)
 
 public:
     static constexpr int N_MEL_FILTERS  = 40;
@@ -59,6 +60,9 @@ public:
 
     AudioFeatures* audioSource() const { return m_source; }
     void           setAudioSource(AudioFeatures* s);
+
+    bool active() const { return m_active; }
+    void setActive(bool a);
 
     // Render-thread accessor. Writes the latest MFCC vector (N_COEFFS
     // floats; the caller is expected to ignore index 0 for trajectory
@@ -88,6 +92,7 @@ signals:
     // Emitted at the end of each successful hop. Direct-connected
     // consumers (MfccTrajectory) react synchronously on the GUI thread.
     void mfccUpdated();
+    void activeChanged();
 
 private slots:
     void onFeaturesUpdated();
@@ -106,6 +111,7 @@ private:
 
     int    m_fftSize    = FRAME_SAMPLES;
     double m_sampleRate = 44100.0;
+    bool   m_active     = true;
 
     // Precomputed analysis state.
     std::vector<float> m_hann;            // FRAME_SAMPLES

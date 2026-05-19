@@ -46,6 +46,7 @@ class ChromaAnalyzer : public QObject {
     // anyone wants to drive bars from the chromagram) can iterate.
     Q_PROPERTY(QVariantList chroma         READ chromaList         NOTIFY chromaUpdated)
     Q_PROPERTY(QVariantList chromaSmoothed READ chromaSmoothedList NOTIFY chromaUpdated)
+    Q_PROPERTY(bool active READ active WRITE setActive NOTIFY activeChanged)
 
 public:
     static constexpr int PITCH_CLASSES = 12;
@@ -55,6 +56,9 @@ public:
 
     CqtAnalyzer* cqtSource() const { return m_cqtSource; }
     void         setCqtSource(CqtAnalyzer* s);
+
+    bool active() const { return m_active; }
+    void setActive(bool a);
 
     // QML-readable snapshots (allocate on call -- only invoked from QML).
     QVariantList chromaList() const;
@@ -80,6 +84,7 @@ public:
 signals:
     void cqtSourceChanged();
     void chromaUpdated();
+    void activeChanged();
 
 private slots:
     void onHopComplete();
@@ -97,6 +102,8 @@ private:
 
     float  m_alphaAttack  = 0.0f;
     float  m_alphaRelease = 0.0f;
+
+    bool   m_active = true;
 
     // Quarter-tone Gaussian sigma in bins (so offset=1 -> ~62% weight,
     // offset=0 -> 100% weight). With B=24 (CqtAnalyzer default) each PC

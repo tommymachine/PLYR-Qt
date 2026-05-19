@@ -118,10 +118,19 @@ void PersistenceBarcode::setAutoScaleRadius(bool v)
 }
 
 
+void PersistenceBarcode::setActive(bool a)
+{
+    if (m_active == a) return;
+    m_active = a;
+    emit activeChanged();
+}
+
+
 // --- Hooks ----------------------------------------------------------------
 
 void PersistenceBarcode::onBarcodeUpdated()
 {
+    if (!m_active) return;
     update();
 }
 

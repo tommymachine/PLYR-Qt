@@ -38,6 +38,8 @@ class CqtAnalyzer : public QObject {
     Q_PROPERTY(AudioFeatures* audioSource READ audioSource WRITE setAudioSource
                NOTIFY audioSourceChanged)
 
+    Q_PROPERTY(bool active READ active WRITE setActive NOTIFY activeChanged)
+
 public:
     // Upper bound used to size the magnitude buffer. 24 bins/oct * 12 oct =
     // 288 would still fit; the runtime config picks the real count via
@@ -58,6 +60,9 @@ public:
 
     AudioFeatures* audioSource() const { return m_source; }
     void           setAudioSource(AudioFeatures* s);
+
+    bool active() const { return m_active; }
+    void setActive(bool a);
 
     // Feed mono samples (caller mono-folds from stereo). Maintains the
     // top-octave ring + per-lower-octave decimated rings under a short
@@ -97,6 +102,7 @@ public:
 signals:
     void audioSourceChanged();
     void hopComplete();
+    void activeChanged();
 
 private slots:
     // Connected to AudioFeatures::featuresUpdated when audioSource is
@@ -194,6 +200,7 @@ private:
     double m_sampleRate    = 44100.0;
     int    m_fftSize       = 4096;
     int    m_outputBins    = 192;
+    bool   m_active        = true;
 
     // Scope pull scratch (only used when audioSource is set).
     std::array<float, 2048> m_pullL {};

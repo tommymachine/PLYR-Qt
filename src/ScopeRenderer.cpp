@@ -680,8 +680,16 @@ void ScopeRenderer::setAudioSource(AudioFeatures* s)
     emit audioSourceChanged();
 }
 
+void ScopeRenderer::setActive(bool a)
+{
+    if (m_active.load(std::memory_order_relaxed) == a) return;
+    m_active.store(a, std::memory_order_relaxed);
+    emit activeChanged();
+}
+
 void ScopeRenderer::onFeaturesUpdated()
 {
+    if (!m_active.load(std::memory_order_relaxed)) return;
     if (!m_source) return;
     if (!m_source->fillScopeStereo(m_sampleL.data(), m_sampleR.data(), SAMPLE_COUNT))
         return;

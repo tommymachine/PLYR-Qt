@@ -20,9 +20,9 @@
 //     sibling SpectrumTexture QQuickItem.
 //
 // Threading contract:
-//   - pushPcm() is called on the audio thread (DirectConnection from
-//     PcmPipe::samplesServed). Internally writes to the stereo ring
-//     under a short mutex.
+//   - pushPcm() is called on the audio thread from AudioWorker's
+//     lookahead tap. Internally writes to the stereo ring under a
+//     short mutex.
 //   - refresh() is called on the GUI thread by a QML Timer. Reads the
 //     ring under the same mutex, then does all FFT + smoothing work on
 //     the GUI thread. Updates std::atomic<float> scalars and emits
@@ -100,11 +100,6 @@ public:
     // Override the inferred sample rate. Normally pushPcm()'s first call
     // sets it; provide this for testing / future format-change support.
     Q_INVOKABLE void setSampleRate(double hz);
-
-    // Set the refresh rate the envelope-follower coefficients are tuned
-    // against. Default 60 Hz to match the QML timer. Re-derives the
-    // attack/release α constants for every band.
-    Q_INVOKABLE void setRefreshHz(double hz);
 
     // -- Scalar reads (atomic; safe from any thread) ----------------------
 

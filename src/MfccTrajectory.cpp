@@ -643,10 +643,20 @@ void MfccTrajectory::resetPCA()
 }
 
 
+void MfccTrajectory::setActive(bool a)
+{
+    if (m_active.load(std::memory_order_relaxed) == a) return;
+    m_active.store(a, std::memory_order_relaxed);
+    if (m_analyzer) m_analyzer->setActive(a);
+    emit activeChanged();
+}
+
+
 // --- Hop handler -----------------------------------------------------------
 
 void MfccTrajectory::onMfccUpdated()
 {
+    if (!m_active.load(std::memory_order_relaxed)) return;
     ++m_hopsSeen;
     ++m_hopsSinceRecompute;
 

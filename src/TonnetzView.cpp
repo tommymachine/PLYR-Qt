@@ -319,8 +319,17 @@ void TonnetzView::rebuildLattice()
 
 // --- Hop -> lit recomputation ------------------------------------------------
 
+void TonnetzView::setActive(bool a)
+{
+    if (m_active == a) return;
+    m_active = a;
+    emit activeChanged();
+}
+
+
 void TonnetzView::onChromaUpdated()
 {
+    if (!m_active) return;
     if (!m_chromaSource) return;
     m_chromaSource->fillChromaSmoothed(m_lastChroma.data());
     recomputeLit();

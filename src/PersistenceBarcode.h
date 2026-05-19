@@ -53,6 +53,7 @@ class PersistenceBarcode : public QQuickPaintedItem {
     // filtration ceiling). When false, use maxRadius directly.
     Q_PROPERTY(bool autoScaleRadius READ autoScaleRadius WRITE setAutoScaleRadius
                NOTIFY autoScaleRadiusChanged)
+    Q_PROPERTY(bool active READ active WRITE setActive NOTIFY activeChanged)
 
 public:
     explicit PersistenceBarcode(QQuickItem* parent = nullptr);
@@ -81,6 +82,9 @@ public:
     bool autoScaleRadius() const { return m_autoScale; }
     void setAutoScaleRadius(bool v);
 
+    bool active() const { return m_active; }
+    void setActive(bool a);
+
     void paint(QPainter* painter) override;
 
 signals:
@@ -93,6 +97,7 @@ signals:
     void labelColorChanged();
     void minPersistenceChanged();
     void autoScaleRadiusChanged();
+    void activeChanged();
 
 private slots:
     void onBarcodeUpdated();
@@ -108,6 +113,7 @@ private:
     QColor m_labelColor     = QColor(0xFF, 0xFF, 0xFF, 0x6E);
     float  m_minPersistence = 0.0f;
     bool   m_autoScale      = true;
+    bool   m_active         = true;
 
     // Sorted bar list: pre-allocated so paint() doesn't allocate.
     QVector<PersistentHomologyAnalyzer::PersistencePair> m_sorted;

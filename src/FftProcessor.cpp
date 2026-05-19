@@ -64,6 +64,13 @@ void FftProcessor::setDisplaySlope(float dbPerOct)
 }
 
 
+void FftProcessor::setActive(bool a)
+{
+    bool prev = m_active.exchange(a, std::memory_order_relaxed);
+    if (prev != a) emit activeChanged();
+}
+
+
 void FftProcessor::pushBuffer(const QAudioBuffer& buf)
 {
     const auto fmt      = buf.format();
@@ -134,6 +141,7 @@ void FftProcessor::pushBuffer(const QAudioBuffer& buf)
 
 void FftProcessor::pushPcm(const char* data, qint64 bytes, const QAudioFormat& fmt)
 {
+    if (!m_active.load(std::memory_order_relaxed)) return;
     if (!data || bytes <= 0) return;
     const int channels      = fmt.channelCount();
     const int bytesPerSample = fmt.bytesPerSample();
@@ -141,6 +149,17 @@ void FftProcessor::pushPcm(const char* data, qint64 bytes, const QAudioFormat& f
 
     const int frames = int(bytes / (qint64(channels) * bytesPerSample));
     if (frames <= 0) return;
+
+    // First call wins on the sample rate; subsequent format changes also
+    // take effect. AudioWorker establishes a 44.1 kHz canonical format,
+    // but be defensive about unusual sources (mirrors AudioFeatures).
+    // Bin-to-band mapping recomputes inline in fillBandsAndPeaks, so
+    // changing m_sampleRate is enough — no scaffold to rebuild here.
+    if (fmt.sampleRate() > 0 &&
+        std::abs(double(fmt.sampleRate()) - m_sampleRate) > 1e-3)
+    {
+        m_sampleRate = double(fmt.sampleRate());
+    }
 
     QMutexLocker lk(&m_ringMutex);
     const int cap = int(m_ring.size());
@@ -224,7 +243,8 @@ bool FftProcessor::fillBandsAndPeaks(float* out)
     kiss_fftr(m_fft->cfg, m_windowed.data(), m_fft->spectrum.data());
 
     // Group bins into 16 log-spaced bands (30Hz → 16kHz), dB-scale.
-    constexpr float sampleRate = 44100.0f;
+    // Sample rate is adapted from the source in pushPcm.
+    const float     sampleRate = float(m_sampleRate);
     constexpr float minFreq    = 30.0f;
     constexpr float maxFreq    = 16000.0f;
     const float     binHz      = sampleRate / float(FFT_SIZE);

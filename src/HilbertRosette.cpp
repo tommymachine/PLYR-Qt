@@ -704,8 +704,18 @@ QVariantList HilbertRosette::bandCenters() const
 }
 
 
+void HilbertRosette::setActive(bool a)
+{
+    if (m_active.load(std::memory_order_relaxed) == a) return;
+    m_active.store(a, std::memory_order_relaxed);
+    if (m_analyzer) m_analyzer->setActive(a);
+    emit activeChanged();
+}
+
+
 void HilbertRosette::onBandsUpdated()
 {
+    if (!m_active.load(std::memory_order_relaxed)) return;
     if (!m_analyzer) return;
     std::array<float, N_BANDS> env {}, phase {}, freq {};
     if (!m_analyzer->fillBandStates(env.data(), phase.data(), freq.data()))

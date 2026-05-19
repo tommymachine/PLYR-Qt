@@ -53,6 +53,7 @@ class KeyEstimator : public QObject {
     // by default; configurable via setTopN. Useful for QML to drive
     // secondary glow markers on the torus.
     Q_PROPERTY(QVariantList topKeys  READ topKeys       NOTIFY estimateUpdated)
+    Q_PROPERTY(bool active READ active WRITE setActive NOTIFY activeChanged)
 
 public:
     static constexpr int PITCH_CLASSES = 12;
@@ -64,6 +65,9 @@ public:
 
     ChromaAnalyzer* chromaSource() const { return m_chromaSource; }
     void            setChromaSource(ChromaAnalyzer* s);
+
+    bool active() const { return m_active; }
+    void setActive(bool a);
 
     QString      keyName()       const { return m_keyName;       }
     float        keyConfidence() const { return m_keyConfidence; }
@@ -102,6 +106,7 @@ public:
 signals:
     void chromaSourceChanged();
     void estimateUpdated();
+    void activeChanged();
 
 private slots:
     void onChromaUpdated();
@@ -161,4 +166,6 @@ private:
     // otherwise the first frame's published centroid is half-way to
     // (0, 0) regardless of the actual chord.
     bool m_havePrior = false;
+
+    bool m_active = true;
 };

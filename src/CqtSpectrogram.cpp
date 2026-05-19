@@ -98,10 +98,20 @@ void CqtSpectrogram::setAutoScroll(bool v)
 }
 
 
+void CqtSpectrogram::setActive(bool a)
+{
+    if (m_active == a) return;
+    m_active = a;
+    if (m_analyzer) m_analyzer->setActive(a);
+    emit activeChanged();
+}
+
+
 // --- Hop -> ring -------------------------------------------------------------
 
 void CqtSpectrogram::onHopComplete()
 {
+    if (!m_active) return;
     if (!m_autoScroll) return;
 
     // Snapshot the latest CQT row into the ring at m_writeCol. Column-

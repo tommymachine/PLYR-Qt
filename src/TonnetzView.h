@@ -66,6 +66,7 @@ class TonnetzView : public QQuickPaintedItem {
     // when nothing is above the lit threshold.
     Q_PROPERTY(QString brightestTriadLabel READ brightestTriadLabel
                NOTIFY chromaTickComplete)
+    Q_PROPERTY(bool active READ active WRITE setActive NOTIFY activeChanged)
 
 public:
     static constexpr int PITCH_CLASSES = 12;
@@ -99,6 +100,9 @@ public:
     void setShowAxes(bool v);
 
     QString brightestTriadLabel() const { return m_brightestLabel; }
+
+    bool active() const { return m_active; }
+    void setActive(bool a);
 
     void paint(QPainter* painter) override;
 
@@ -136,6 +140,7 @@ signals:
     // Fired after each triad-lit recomputation. Drives the brightest-
     // triad-label binding in QML so the corner readout updates live.
     void chromaTickComplete();
+    void activeChanged();
 
 protected:
     void geometryChange(const QRectF& newG, const QRectF& oldG) override;
@@ -182,6 +187,7 @@ private:
     QColor m_labelColor   = QColor(255, 255, 255, 153);  // ~0.6 alpha
     bool   m_showLabels   = true;
     bool   m_showAxes     = false;
+    bool   m_active       = true;
 
     // Lattice -- rebuilt on resize, sized for the current item geometry.
     QVector<Triad>      m_triads;

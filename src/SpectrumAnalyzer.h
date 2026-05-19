@@ -93,6 +93,8 @@ class SpectrumAnalyzer : public QQuickItem {
     Q_PROPERTY(QQuickItem* peakProvider    READ peakProvider    CONSTANT)
     Q_PROPERTY(QQuickItem* infPeakProvider READ infPeakProvider CONSTANT)
 
+    Q_PROPERTY(bool active READ active WRITE setActive NOTIFY activeChanged)
+
 public:
     // Display curve resolution. Width of the 1×N texture pumped to the
     // shader. Fixed at 1024 — that's effectively the horizontal resolution
@@ -137,6 +139,9 @@ public:
     QQuickItem* peakProvider() const;
     QQuickItem* infPeakProvider() const;
 
+    bool active() const { return m_active; }
+    void setActive(bool a);
+
     // Reset the infinite-peak buffer to silence. Cheap; safe to call from QML.
     Q_INVOKABLE void resetPeakHold();
 
@@ -159,6 +164,7 @@ signals:
     void freqMinChanged();
     void freqMaxChanged();
     void fillTintChanged();
+    void activeChanged();
 
 protected:
     void itemChange(ItemChange change, const ItemChangeData& value) override;
@@ -191,6 +197,7 @@ private:
     float  m_freqMax = 20000.0f;
     QColor m_fillTint = QColor(255, 255, 255);  // unused at this layer; the
                                                 // shader picks up the palette
+    bool   m_active  = true;
 
     // Pipeline scratch (GUI thread only). Sized for the maxima so no realloc
     // ever fires inside runPipeline().

@@ -60,6 +60,7 @@ class HilbertRosette : public QQuickRhiItem {
                NOTIFY showBaseRingChanged)
     Q_PROPERTY(bool  showBandLabels READ showBandLabels WRITE setShowBandLabels
                NOTIFY showBandLabelsChanged)
+    Q_PROPERTY(bool active READ active WRITE setActive NOTIFY activeChanged)
 
 public:
     static constexpr int N_BANDS = HilbertAnalyzer::N_BANDS;
@@ -85,6 +86,9 @@ public:
     bool  showBandLabels() const { return m_showBandLabels; }
     void  setShowBandLabels(bool v);
 
+    bool  active() const { return m_active.load(std::memory_order_relaxed); }
+    void  setActive(bool a);
+
     // The fixed log-spaced band centers (Hz) -- forwarded from the
     // internal analyzer so QML can label the bands without owning its
     // own HilbertAnalyzer instance.
@@ -100,6 +104,7 @@ signals:
     void ringRadiusChanged();
     void showBaseRingChanged();
     void showBandLabelsChanged();
+    void activeChanged();
 
 private slots:
     void onBandsUpdated();
@@ -125,4 +130,6 @@ private:
     float m_ringRadius  = 0.40f;          // fraction of half-min(w, h)
     bool  m_showBaseRing  = true;
     bool  m_showBandLabels = false;       // QML side; here for completeness
+
+    std::atomic<bool> m_active {true};
 };

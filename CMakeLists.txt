@@ -189,6 +189,8 @@ qt_add_qml_module(concerto
         src/PlaylistModel.h
         src/FftProcessor.cpp
         src/FftProcessor.h
+        src/VisualizerRegistry.cpp
+        src/VisualizerRegistry.h
         src/AudioFeatures.cpp
         src/AudioFeatures.h
         src/SpectrumTexture.cpp

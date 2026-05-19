@@ -96,6 +96,7 @@ class PersistentHomologyAnalyzer : public QObject {
     Q_PROPERTY(int   lastComputeUsec READ lastComputeUsec NOTIFY barcodeUpdated)
     // True once at least one Ripser run has completed.
     Q_PROPERTY(bool  hasData         READ hasData         NOTIFY barcodeUpdated)
+    Q_PROPERTY(bool active READ active WRITE setActive NOTIFY activeChanged)
 
 public:
     struct PersistencePair {
@@ -132,6 +133,9 @@ public:
     float lastThreshold() const  { return m_lastThreshold.load(std::memory_order_acquire); }
     int   lastComputeUsec() const { return m_lastComputeUsec.load(std::memory_order_acquire); }
     bool  hasData() const         { return m_hasData.load(std::memory_order_acquire); }
+
+    bool  active() const { return m_active; }
+    void  setActive(bool a);
 
     // QML-accessible accessor that returns the latest barcode as a
     // QVariantList of { birth, death, dim } maps. Used by the corner
@@ -172,6 +176,7 @@ signals:
     void hopsPerComputeChanged();
     void dimMaxChanged();
     void barcodeUpdated();
+    void activeChanged();
 
 private slots:
     void onMfccUpdated();
@@ -192,12 +197,11 @@ private:
     // segments don't degenerate. lowerSize = N*(N-1)/2.
     static float pickThreshold(const std::vector<float>& lowerDistances);
 
-    // Hold the analyzer instance globally for the duration of a Ripser
-    // run so the C-style emit callback can find us. Ripser is mutually
-    // exclusive (m_computeMutex) so this is safe -- only one compute
-    // is in flight at a time.
-    void setActive();
-    void clearActive();
+    // The C-style emit callbacks find the active instance via the
+    // file-scope g_activeAnalyzer pointer in the .cpp (set/cleared
+    // around the Ripser call). Ripser is mutually exclusive
+    // (m_computeMutex) so the global is safe -- only one compute is
+    // in flight at a time.
     friend void ripser_emit_pair(int dim, float birth, float death);
     friend void ripser_begin_dim(int dim);
 
@@ -209,6 +213,7 @@ private:
     int m_windowSize     = 64;
     int m_hopsPerCompute = 30;
     int m_dimMax         = 1;
+    bool m_active        = true;
 
     // Hop counter since the last compute fired.
     int m_hopsSinceCompute = 0;

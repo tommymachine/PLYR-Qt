@@ -195,14 +195,6 @@ void AudioFeatures::setSampleRate(double hz)
 }
 
 
-void AudioFeatures::setRefreshHz(double hz)
-{
-    if (hz <= 1.0 || hz > 1000.0) return;
-    m_refreshHz = hz;
-    recomputeEnvelopeCoeffs();
-}
-
-
 // --- PCM ingestion ---------------------------------------------------------
 
 void AudioFeatures::pushPcm(const char* data, qint64 bytes, const QAudioFormat& fmt)

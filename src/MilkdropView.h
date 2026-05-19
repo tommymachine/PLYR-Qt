@@ -56,6 +56,8 @@ class MilkdropView : public QQuickRhiItem {
     // fails — QML surfaces this for the user.
     Q_PROPERTY(QString lastError READ lastError NOTIFY lastErrorChanged)
 
+    Q_PROPERTY(bool active READ active WRITE setActive NOTIFY activeChanged)
+
 public:
     explicit MilkdropView(QQuickItem* parent = nullptr);
     ~MilkdropView() override;
@@ -68,6 +70,9 @@ public:
 
     QString lastError() const { return m_lastError; }
 
+    bool active() const { return m_active.load(std::memory_order_relaxed); }
+    void setActive(bool a);
+
 protected:
     QQuickRhiItemRenderer* createRenderer() override;
 
@@ -75,6 +80,7 @@ signals:
     void audioSourceChanged();
     void presetPathChanged();
     void lastErrorChanged();
+    void activeChanged();
 
 private slots:
     // Pulls fresh bass/mid/treb from AudioFeatures into the staged
@@ -104,4 +110,6 @@ private:
     std::atomic<bool> m_presetDirty{false};   // → trigger reload in sync
 
     QString m_lastError;
+
+    std::atomic<bool> m_active {true};
 };

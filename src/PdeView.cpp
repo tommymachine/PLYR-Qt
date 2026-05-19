@@ -506,7 +506,9 @@ void PdeViewImpl::synchronize(QQuickRhiItem* item)
 {
     auto* pv = static_cast<PdeView*>(item);
 
-    if (pv->m_audioDirty.exchange(false, std::memory_order_acquire)) {
+    const bool active = pv->m_active.load(std::memory_order_relaxed);
+
+    if (active && pv->m_audioDirty.exchange(false, std::memory_order_acquire)) {
         QMutexLocker lk(&pv->m_stagedMutex);
         m_audio = pv->m_staged;
     }
@@ -545,8 +547,15 @@ void PdeViewImpl::synchronize(QQuickRhiItem* item)
     m_gsColorB[2] = float(pv->m_gsColorB.blueF());
     m_gsColorB[3] = 1.0f;
 
-    m_pendingImpulses = pv->m_pendingFluxImpulses.exchange(0,
-                            std::memory_order_acquire);
+    if (active) {
+        m_pendingImpulses = pv->m_pendingFluxImpulses.exchange(0,
+                                std::memory_order_acquire);
+    } else {
+        // Drain anything that snuck in while we were inactive so it
+        // doesn't fire as a backlog the moment we reactivate.
+        pv->m_pendingFluxImpulses.store(0, std::memory_order_release);
+        m_pendingImpulses = 0;
+    }
 }
 
 
@@ -907,8 +916,16 @@ void PdeView::resetGrayScott()
     update();
 }
 
+void PdeView::setActive(bool a)
+{
+    if (m_active.load(std::memory_order_relaxed) == a) return;
+    m_active.store(a, std::memory_order_relaxed);
+    emit activeChanged();
+}
+
 void PdeView::onFeaturesUpdated()
 {
+    if (!m_active.load(std::memory_order_relaxed)) return;
     if (!m_audioSource) return;
     {
         QMutexLocker lk(&m_stagedMutex);
@@ -928,6 +945,7 @@ void PdeView::onFeaturesUpdated()
 
 void PdeView::onAudioOnset()
 {
+    if (!m_active.load(std::memory_order_relaxed)) return;
     m_pendingFluxImpulses.fetch_add(1, std::memory_order_acq_rel);
     update();
 }

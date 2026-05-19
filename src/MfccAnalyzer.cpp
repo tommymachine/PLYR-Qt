@@ -100,8 +100,17 @@ void MfccAnalyzer::setAudioSource(AudioFeatures* s)
 }
 
 
+void MfccAnalyzer::setActive(bool a)
+{
+    if (m_active == a) return;
+    m_active = a;
+    emit activeChanged();
+}
+
+
 void MfccAnalyzer::onFeaturesUpdated()
 {
+    if (!m_active) return;
     if (!m_source) return;
     if (!m_source->fillScopeStereo(m_pullL.data(), m_pullR.data(), FRAME_SAMPLES))
         return;

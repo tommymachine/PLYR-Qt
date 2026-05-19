@@ -50,6 +50,7 @@ class CqtSpectrogram : public QQuickItem {
     Q_PROPERTY(int   scrollOffset READ scrollOffset NOTIFY scrollOffsetChanged)
     // Total bins exposed by the analyzer (binsPerOctave * nOctaves).
     Q_PROPERTY(int   bins          READ bins         NOTIFY binsChanged)
+    Q_PROPERTY(bool active READ active WRITE setActive NOTIFY activeChanged)
 
 public:
     static constexpr int DEFAULT_COLUMNS = 1024;
@@ -75,6 +76,9 @@ public:
     bool  autoScroll() const { return m_autoScroll; }
     void  setAutoScroll(bool v);
 
+    bool  active() const { return m_active; }
+    void  setActive(bool a);
+
     // QQuickItem texture-provider plumbing.
     bool isTextureProvider() const override { return true; }
     QSGTextureProvider* textureProvider() const override;
@@ -92,6 +96,7 @@ signals:
     void dbMaxChanged();
     void autoScrollChanged();
     void scrollOffsetChanged();
+    void activeChanged();
 
 protected:
     void itemChange(ItemChange change, const ItemChangeData& value) override;
@@ -114,6 +119,7 @@ private:
     float  m_dbMin         = -80.0f;
     float  m_dbMax         =   0.0f;
     bool   m_autoScroll    = true;
+    bool   m_active        = true;
 
     // Ring: bins x columns R8, row-major (one row per pitch, lowest at
     // row 0). Written GUI-side; snapshotted under m_ringMutex by the

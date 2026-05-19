@@ -70,6 +70,7 @@ public:
     Q_PROPERTY(AudioFeatures* audioSource READ audioSource WRITE setAudioSource
                NOTIFY audioSourceChanged)
     Q_PROPERTY(Mode  mode READ mode WRITE setMode NOTIFY modeChanged)
+    Q_PROPERTY(bool active READ active WRITE setActive NOTIFY activeChanged)
 
     // Chladni -------------------------------------------------------------
     Q_PROPERTY(float chladniM READ chladniM WRITE setChladniM
@@ -107,6 +108,9 @@ public:
 
     Mode  mode() const { return m_mode; }
     void  setMode(Mode m);
+
+    bool active() const { return m_active.load(std::memory_order_relaxed); }
+    void setActive(bool a);
 
     float chladniM() const { return m_chladniM; }
     void  setChladniM(float v);
@@ -166,6 +170,7 @@ signals:
     // commits the live (F, k) it computed from the audio source --
     // lets a debug HUD show the effective values.
     void gsParamsAdvanced();
+    void activeChanged();
 
 private slots:
     // Pulls fresh audio scalars from AudioFeatures into the staged
@@ -221,4 +226,10 @@ private:
     // can display it.
     std::atomic<float>     m_gsLastFeed {0.035f};
     std::atomic<float>     m_gsLastKill {0.062f};
+
+    // Visualizer-selector gate. False = audio staging + render-side
+    // audio pickup go to no-ops; the solver still runs on whatever
+    // state was last staged (no GPU work elision -- that's QML's job
+    // via item visibility).
+    std::atomic<bool>      m_active {true};
 };

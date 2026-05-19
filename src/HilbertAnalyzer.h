@@ -70,6 +70,7 @@ class HilbertAnalyzer : public QObject {
 
     Q_PROPERTY(AudioFeatures* audioSource READ audioSource WRITE setAudioSource
                NOTIFY audioSourceChanged)
+    Q_PROPERTY(bool active READ active WRITE setActive NOTIFY activeChanged)
 
 public:
     static constexpr int N_BANDS         = 8;
@@ -82,6 +83,9 @@ public:
 
     AudioFeatures* audioSource() const { return m_source; }
     void           setAudioSource(AudioFeatures* s);
+
+    bool active() const { return m_active; }
+    void setActive(bool a);
 
     // Render-thread callable accessor. Each output array must hold at
     // least N_BANDS floats. Returns false if no hop has run yet (in
@@ -119,6 +123,7 @@ signals:
     // Emitted at the end of each successful hop. Direct-connected
     // consumers (HilbertRosette) react synchronously on the GUI thread.
     void bandsUpdated();
+    void activeChanged();
 
 private slots:
     void onFeaturesUpdated();
@@ -172,6 +177,7 @@ private:
 
     double                                       m_sampleRate = 44100.0;
     std::array<BandState, N_BANDS>               m_bands {};
+    bool                                         m_active = true;
 
     // GUI-thread pull buffer; reused across hops.
     std::vector<float>                           m_pullL;

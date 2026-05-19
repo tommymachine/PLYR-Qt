@@ -69,8 +69,17 @@ void ChromaAnalyzer::recomputeAlphas()
 }
 
 
+void ChromaAnalyzer::setActive(bool a)
+{
+    if (m_active == a) return;
+    m_active = a;
+    emit activeChanged();
+}
+
+
 void ChromaAnalyzer::onHopComplete()
 {
+    if (!m_active) return;
     if (!m_cqtSource) return;
 
     const int outputBins    = m_cqtSource->outputBins();

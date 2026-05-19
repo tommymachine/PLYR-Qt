@@ -92,15 +92,10 @@ qint64 PcmPipe::readData(char* out, qint64 maxLen)
     std::memcpy(out, m_buf.constData() + m_pos, size_t(n));
     m_pos += n;
     m_totalServed += n;
-    // Emit while still holding the lock? Risky — receivers might re-enter.
-    // Emit after releasing — but m_buf could still change under us.
-    // Safe-enough: copy the consumed slice first, release, emit with
-    // the local copy's lifetime. Since `out` is caller-provided, just
-    // emit with it; the receiver must finish synchronously.
     lk.unlock();
 
-    // EQ post-process in place, before the FFT tap sees the samples so the
-    // visualizer reflects what's audible. Bypassed EQ is a fast memcpy-skip.
+    // EQ post-process in place, so the audible output (and any future
+    // tap into `out`) sees the EQ shape. Bypassed EQ is a fast no-op.
     if (m_eq && m_numChannels > 0) {
         const size_t frameBytes = sizeof(float) * size_t(m_numChannels);
         const size_t nframes    = size_t(n) / frameBytes;
@@ -108,7 +103,6 @@ qint64 PcmPipe::readData(char* out, qint64 maxLen)
         eq_process(m_eq, samples, samples, nframes);
     }
 
-    emit samplesServed(out, n);
     return n;
 }
 

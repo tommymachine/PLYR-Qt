@@ -183,10 +183,19 @@ QVariantList PersistentHomologyAnalyzer::latestPairs() const
 }
 
 
+void PersistentHomologyAnalyzer::setActive(bool a)
+{
+    if (m_active == a) return;
+    m_active = a;
+    emit activeChanged();
+}
+
+
 // --- Hop slot -------------------------------------------------------------
 
 void PersistentHomologyAnalyzer::onMfccUpdated()
 {
+    if (!m_active) return;
     if (!m_mfcc) return;
     if (++m_hopsSinceCompute < m_hopsPerCompute) return;
 

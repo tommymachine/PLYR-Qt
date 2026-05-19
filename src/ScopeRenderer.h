@@ -61,6 +61,8 @@ class ScopeRenderer : public QQuickRhiItem {
     Q_PROPERTY(AudioFeatures* audioSource READ audioSource WRITE setAudioSource
                NOTIFY audioSourceChanged)
 
+    Q_PROPERTY(bool active READ active WRITE setActive NOTIFY activeChanged)
+
 public:
     enum class Mode { Oscilloscope, Vectorscope };
     Q_ENUM(Mode)
@@ -98,6 +100,9 @@ public:
     AudioFeatures* audioSource() const { return m_source; }
     void setAudioSource(AudioFeatures* s);
 
+    bool active() const { return m_active.load(std::memory_order_relaxed); }
+    void setActive(bool a);
+
 protected:
     QQuickRhiItemRenderer* createRenderer() override;
 
@@ -111,6 +116,7 @@ signals:
     void axisRotationChanged();
     void audioGainChanged();
     void audioSourceChanged();
+    void activeChanged();
 
 private slots:
     void onFeaturesUpdated();
@@ -130,6 +136,7 @@ private:
     bool  m_stereoSeparated = true;
     float m_axisRotation = 45.0f;
     float m_audioGain = 1.0f;
+    std::atomic<bool> m_active {true};
 
     // Scratch buffers, GUI-thread only. Sized once at construction; no
     // resize/reallocate ever fires from the per-frame path.
